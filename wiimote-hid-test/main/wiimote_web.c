@@ -37,6 +37,7 @@ static const struct {
     {"A", 0x0008}, {"B", 0x0004}, {"1", 0x0002}, {"2", 0x0001},
     {"Up", 0x0800}, {"Down", 0x0400}, {"Left", 0x0100}, {"Right", 0x0200},
     {"Plus", 0x1000}, {"Minus", 0x0010}, {"Home", 0x0080},
+    {"AB", 0x000c}, {"ONE_TWO", 0x0003},
 };
 
 static const char INDEX_HTML[] =
@@ -49,7 +50,7 @@ static const char INDEX_HTML[] =
     "#status{text-align:center;color:#8fa0bf;margin:6px 0 22px;min-height:1.5em}"
     ".remote{background:#e8eaf0;color:#172033;border-radius:48px;padding:24px;"
     "box-shadow:0 18px 45px #0008;display:grid;grid-template-columns:1fr 1fr 1fr;"
-    "grid-template-rows:repeat(5,64px);gap:12px;max-width:620px;margin:auto}"
+    "grid-template-rows:repeat(6,56px);gap:12px;max-width:620px;margin:auto}"
     "button{border:0;border-radius:18px;background:#263650;color:white;font-weight:700;"
     "font-size:18px;touch-action:none;user-select:none;-webkit-user-select:none;"
     "box-shadow:0 5px 0 #111a;cursor:pointer}button:active,button.down{"
@@ -62,7 +63,9 @@ static const char INDEX_HTML[] =
     "border-radius:50%;font-size:24px;background:#c74455}.ab button:first-child{"
     "background:#426ec6;width:88px;height:88px}.sys{grid-row:5;align-self:center;"
     "height:50px;background:#66728a}.sys.one{grid-column:1}.sys.two{grid-column:3}"
-    ".sys.home{grid-column:2;background:#d09b43}@media(max-width:460px){.remote{"
+    ".sys.home{grid-column:2;background:#d09b43}.combo{grid-column:1/4;grid-row:6;"
+    "height:48px;background:#506a88}.combo-row{grid-column:1/4;grid-row:6;display:grid;"
+    "grid-template-columns:1fr 1fr;gap:10px}@media(max-width:460px){.remote{"
     "padding:18px;gap:8px;grid-template-rows:repeat(5,56px)}.ab button{width:62px;"
     "height:62px}.ab button:first-child{width:76px;height:76px}}"
     "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
@@ -75,6 +78,8 @@ static const char INDEX_HTML[] =
     "<button class='sys two' data-button='2'>2</button>"
     "<button class='sys' style='grid-column:1;grid-row:1' data-button='Minus'>−</button>"
     "<button class='sys' style='grid-column:3;grid-row:1' data-button='Plus'>+</button>"
+    "<div class='combo-row'><button class='combo' data-button='AB'>A + B</button>"
+    "<button class='combo' data-button='ONE_TWO'>1 + 2</button></div>"
     "</section></main><script>"
     "const statusEl=document.querySelector('#status');let held=new Set(),queue=Promise.resolve();"
     "function send(name,pressed){queue=queue.then(async()=>{try{let r=await fetch('/api/button',{method:'POST',"
@@ -91,11 +96,14 @@ static const char INDEX_HTML[] =
     "b.addEventListener('contextmenu',e=>e.preventDefault())});"
     "window.addEventListener('blur',()=>{for(const b of document.querySelectorAll('.down'))release(b)});"
     "document.addEventListener('visibilitychange',()=>{if(document.hidden){for(const b of document.querySelectorAll('.down'))release(b)}});"
-    "fetch('/api/status').then(r=>r.json()).then(s=>{statusEl.textContent=s.wifi?"
-    "'Wi-Fi connected · '+s.ip+(s.connected?' · DolphinBar HID connected':' · waiting for HID'):"
-    "'Wi-Fi not connected yet'});setInterval(()=>fetch('/api/status').then(r=>r.json()).then(s=>{"
-    "statusEl.dataset.connected=s.connected?'1':'0';if(!s.connected)for(const b of document.querySelectorAll('.down'))release(b)}).catch(()=>{}),1000);"
-    "catch(()=>statusEl.textContent='Web server ready');</script></body></html>";
+    "function updateStatus(s){statusEl.textContent=s.wifi?"
+    "'Wi-Fi connected · '+s.ip+(s.connected?' · HID connected':' · waiting for DolphinBar'):"
+    "'Wi-Fi not connected yet';statusEl.dataset.connected=s.connected?'1':'0';"
+    "if(!s.connected)for(const b of document.querySelectorAll('.down'))release(b)}"
+    "fetch('/api/status').then(r=>r.json()).then(updateStatus).catch(()=>{"
+    "statusEl.textContent='Controller page loaded; status unavailable'})"
+    ".finally(()=>setInterval(()=>fetch('/api/status').then(r=>r.json()).then(updateStatus)"
+    ".catch(()=>{}),1000));</script></body></html>";
 
 static uint16_t get_button_mask(const char *name)
 {
