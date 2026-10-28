@@ -1,6 +1,6 @@
 # ESPmote
 
-An ESP32 Bluetooth Classic HID-device prototype that impersonates a Wii Remote and pairs with a Mayflash DolphinBar. This is experimental firmware, **not a complete Wii Remote replacement**: the current milestone verifies pairing, HID setup and status/LED report exchange. Button simulation, motion/IR, and Nintendo console compatibility are not implemented or verified.
+An ESP32 Bluetooth Classic HID-device prototype that presents a Wii Remote-like HID identity to a Mayflash DolphinBar. This is experimental firmware, **not a complete Wii Remote replacement**. Bluetooth pairing, HID channels, status/LED exchange, a Wi-Fi web controller and button reports have been exercised through the DolphinBar. Memory/init handlers are implemented on the `wifi-web-buttons` branch and have been built/flashed. Calibration data is synthetic and only a narrow subset of extension-enable writes/no-extension behavior is modeled; memory and init responses still need validation against a captured game session. Game compatibility remains unverified.
 
 ## Hardware and software
 
@@ -61,13 +61,11 @@ The slot probe and watcher are read-only with respect to pairing. Do not run the
 
 ## Current scope and limitations
 
-- **Verified:** Bluetooth Classic pairing with the DolphinBar, HID channels open, host report-mode/LED setup, and a status request/reply through a DolphinBar slot.
-- The `wifi-web-buttons` branch adds a Wi-Fi-connected HTTP controller page for direct button press/release input. Enter your SSID/password with `idf.py menuconfig` under **HID Example Configuration**; credentials are stored in ignored local `sdkconfig`, never in tracked defaults or source.
-
-After flashing and connecting the ESP32 to the same LAN, open the `http://<ESP32-IP>/` address printed in the serial log. Press and hold buttons on the on-screen remote; release them to clear the corresponding HID bits. The page shows the current Wi-Fi address and HID connection state.
-- The `fake-buttons` branch provides an optional cycle through all 11 core buttons with a 500 ms press / 250 ms neutral release. This is synthetic test input, not physical-button support.
-- **Not yet implemented:** accelerometer/gyro, IR pointer, extensions, speaker, rumble, persistent reconnect handling.
-- **Not yet verified:** Dolphin's controller UI, Wii, Wii U native/vWii, and long-duration/restart reconnect tests.
-- Some host output reports are currently unsupported. The serial log identifies them. HID transport success alone does not mean every application accepts the device.
+- **Verified through the DolphinBar:** Classic Bluetooth pairing/authentication, HID open, host report-mode and LED commands, status request/reply, web-generated core-button reports at the bar's USB HID slot. Latest memory/init firmware builds and has been flashed; flashing resets the bar link, so re-pair with SYNC before testing. Game compatibility remains unresolved.
+- **Game compatibility:** A real Wiimote works in the user's Dolphin/FIFA 15 setup. ESPmote's button report was confirmed at the DolphinBar slot, but has not yet made the game respond. Memory/init handlers were added as a protocol step, but no game pass has been observed. FIFA 15's reported prompt explicitly refers to the Nunchuk stick; this firmware reports no extension and has no Nunchuk data, so that title likely needs more than the implemented core buttons.
+- The Wi-Fi HTTP page offers A/B/1/2, D-pad, Plus/Minus/Home and A+B/1+2. Credentials must be entered locally via `idf.py menuconfig` under **HID Example Configuration** and stay in ignored `sdkconfig`; never put them in `sdkconfig.defaults`, source, or commits.
+- **Not implemented:** physical controls; a real Nunchuk or other expansion; valid live accelerometer/motion data; IR camera/pointing; speaker audio; rumble motor output. Memory/init handling is partial: it supplies synthetic calibration bytes, accepts two extension-disable writes, and returns no-extension/NACK for unsupported I2C devices. It is not a complete EEPROM, calibration or I2C/register emulator. This newest memory/init code has built/flashed but is not yet verified against the FIFA 15/Dolphin startup trace. Multi-chunk reads are sent by a dedicated task with 10 ms pacing between 16-byte replies.
+- **Not verified:** Dolphin/game compatibility beyond the DolphinBar transport, real Wii, Wii U native/vWii, persistent reconnects and long-duration soak behavior. HID connection and a button report at the bar do not by themselves establish application compatibility.
+- **Source/library provenance:** The firmware does not link or vendor WiiUse or Dolphin code. Protocol details were consulted from WiiBrew's Wiimote protocol documentation, WiiUse's `wiiuse.h`/`io.c`/`wiiuse_internal.h` protocol constants and reference behavior, and Dolphin's `WiimoteConstants.h`, `WiimoteReport.h`, `WiimoteReal.cpp`, and `WiimoteEmu/EmuSubroutines.cpp`. Those repositories are protocol references only; their source files were not copied into this project. See the attribution section in [`wiimote-hid-test/README.md`](wiimote-hid-test/README.md).
 
 See [`wiimote-hid-test/README.md`](wiimote-hid-test/README.md) for firmware details and debugging.

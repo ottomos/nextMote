@@ -10,8 +10,8 @@ VID = 0x057E
 PID = 0x0306
 STATUS_REQUEST = b"\x15\x00"
 BUTTON_REPORT_ID = 0x30
-# Core-button masks as documented by WiiBrew. The two button bytes are
-# assembled little-endian: first byte is the low byte, second is the high byte.
+# Report 0x30 carries the 16-bit core-button mask big-endian: byte 1 is high,
+# byte 2 is low.
 BUTTON_NAMES = {
     0x0001: "TWO",
     0x0002: "ONE",
@@ -105,7 +105,7 @@ def main() -> None:
                 continue
             seen += 1
             if report[0] == BUTTON_REPORT_ID and len(report) >= 3:
-                buttons = (report[2] << 8) | report[1]
+                buttons = (report[1] << 8) | report[2]
                 if buttons != last_buttons:
                     labels = [name for bit, name in BUTTON_NAMES.items() if buttons & bit]
                     print(f"Buttons: 0x{buttons:04x} {labels if labels else '[none]'}", flush=True)

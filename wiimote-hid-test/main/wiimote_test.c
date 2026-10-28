@@ -19,14 +19,30 @@
 #include "freertos/task.h"
 
 #define REPORT_STATUS 0x20
+#define REPORT_READ_DATA_REPLY 0x21
+#define REPORT_WRITE_DATA_ACK 0x22
 #define REPORT_BUTTONS 0x30
 #define REPORT_LED 0x11
 #define REPORT_STATUS_REQUEST 0x15
 #define REPORT_MODE 0x12
-#define REPORT_ACK 0x22
+#define REPORT_ACK REPORT_WRITE_DATA_ACK
 #define REPORT_READ_MEMORY 0x17
 #define REPORT_WRITE_MEMORY 0x16
 #define BUTTON_PAYLOAD_LEN 2
+#define MEMORY_REPORT_DATA_LEN 16
+#define MEMORY_REPORT_PAYLOAD_LEN 21
+#define MEMORY_SPACE_EEPROM 0x00
+#define MEMORY_SPACE_I2C 0x01
+#define MEMORY_SPACE_I2C_ALT 0x02
+#define MEMORY_ERROR_SUCCESS 0x00
+#define MEMORY_ERROR_BUSY 0x04
+#define MEMORY_ERROR_INVALID_SPACE 0x06
+#define MEMORY_ERROR_NACK 0x07
+#define MEMORY_ERROR_INVALID_ADDRESS 0x08
+#define EEPROM_I2C_ADDRESS 0x50
+#define I2C_SLAVE_EXTENSION 0x52
+#define I2C_REG_EXTENSION_ENABLE 0xF0
+#define I2C_REG_EXTENSION_ENABLE_2 0xFB
 #define BUTTON_DEMO_PRESS_MS 500
 #define BUTTON_DEMO_RELEASE_MS 250
 #define BUTTON_DEMO_ACTIVE_REPORT 0x30
@@ -47,13 +63,22 @@ static struct {
 static uint8_t send_buttons(void);
 static portMUX_TYPE s_remote_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_web_control_active;
+static portMUX_TYPE s_memory_mux = portMUX_INITIALIZER_UNLOCKED;
+static struct {
+    bool active;
+    uint8_t space;
+    uint8_t slave;
+    uint16_t address;
+    uint16_t remaining;
+} s_memory_read;
+static TaskHandle_t s_memory_read_task;
 
 static void set_web_button_state(uint16_t state)
 {
     portENTER_CRITICAL(&s_remote_mux);
     s_web_control_active = true;
-    s_remote.buttons[0] = (uint8_t)(state & 0xff);
-    s_remote.buttons[1] = (uint8_t)(state >> 8);
+    s_remote.buttons[0] = (uint8_t)(state >> 8);
+    s_remote.buttons[1] = (uint8_t)(state & 0xff);
     bool send_now = s_remote.connected && s_remote.report_mode == REPORT_BUTTONS;
     portEXIT_CRITICAL(&s_remote_mux);
     if (send_now) (void)send_buttons();
@@ -145,10 +170,186 @@ static uint8_t send_status(void)
     return send_input(REPORT_STATUS, payload, sizeof(payload));
 }
 
+static void current_buttons(uint8_t buttons[BUTTON_PAYLOAD_LEN])
+{
+    portENTER_CRITICAL(&s_remote_mux);
+    memcpy(buttons, s_remote.buttons, BUTTON_PAYLOAD_LEN);
+    portEXIT_CRITICAL(&s_remote_mux);
+}
+
 static void send_interrupt_ack(uint8_t report_id, uint8_t error)
 {
-    const uint8_t payload[4] = {s_remote.buttons[0], s_remote.buttons[1], report_id, error};
+    uint8_t buttons[BUTTON_PAYLOAD_LEN];
+    current_buttons(buttons);
+    const uint8_t payload[4] = {buttons[0], buttons[1], report_id, error};
     (void) send_input(REPORT_ACK, payload, sizeof(payload));
+}
+
+static void send_memory_read_reply(uint8_t error, uint16_t address, const uint8_t *data, uint8_t length)
+{
+    uint8_t payload[MEMORY_REPORT_PAYLOAD_LEN] = {0};
+    uint8_t buttons[BUTTON_PAYLOAD_LEN];
+    current_buttons(buttons);
+    payload[0] = buttons[0];
+    payload[1] = buttons[1];
+    payload[2] = (uint8_t)(((length ? ((length - 1) & 0x0f) : 0) << 4) | (error & 0x0f));
+    payload[3] = (uint8_t)(address >> 8);
+    payload[4] = (uint8_t)address;
+    if (data && length) memcpy(payload + 5, data, length);
+    (void) send_input(REPORT_READ_DATA_REPLY, payload, sizeof(payload));
+}
+
+static void send_memory_read_error(uint8_t error, uint16_t address)
+{
+    uint8_t payload[MEMORY_REPORT_PAYLOAD_LEN] = {0};
+    uint8_t buttons[BUTTON_PAYLOAD_LEN];
+    current_buttons(buttons);
+    payload[0] = buttons[0];
+    payload[1] = buttons[1];
+    payload[2] = (uint8_t)(0xf0 | (error & 0x0f));
+    payload[3] = (uint8_t)(address >> 8);
+    payload[4] = (uint8_t)address;
+    (void) send_input(REPORT_READ_DATA_REPLY, payload, sizeof(payload));
+}
+
+static void send_memory_write_ack(uint8_t error)
+{
+    uint8_t buttons[BUTTON_PAYLOAD_LEN];
+    current_buttons(buttons);
+    const uint8_t payload[4] = {buttons[0], buttons[1], REPORT_WRITE_MEMORY, error};
+    (void) send_input(REPORT_WRITE_DATA_ACK, payload, sizeof(payload));
+}
+
+static uint8_t read_wiimote_memory(uint8_t space, uint8_t slave, uint16_t address,
+                                   uint8_t length, uint8_t *output)
+{
+    if (space == MEMORY_SPACE_EEPROM) {
+        if (address == 0x0016 && length == 8) {
+            static const uint8_t calibration[8] = {0x80, 0x80, 0x80, 0x00, 0x9a, 0x9a, 0x9a, 0x00};
+            memcpy(output, calibration, sizeof(calibration));
+            return MEMORY_ERROR_SUCCESS;
+        }
+        if (address + length > 0x1700) return MEMORY_ERROR_INVALID_ADDRESS;
+        memset(output, 0, length);
+        return MEMORY_ERROR_SUCCESS;
+    }
+    if (space != MEMORY_SPACE_I2C && space != MEMORY_SPACE_I2C_ALT)
+        return MEMORY_ERROR_INVALID_SPACE;
+    if (slave == EEPROM_I2C_ADDRESS)
+        return MEMORY_ERROR_INVALID_ADDRESS;
+    if (slave != I2C_SLAVE_EXTENSION)
+        return MEMORY_ERROR_NACK;
+
+    if (address == I2C_REG_EXTENSION_ENABLE && length == 1) {
+        output[0] = 0x00;
+        return MEMORY_ERROR_SUCCESS;
+    }
+    if (address == I2C_REG_EXTENSION_ENABLE_2 && length == 1) {
+        output[0] = 0x00;
+        return MEMORY_ERROR_SUCCESS;
+    }
+    return MEMORY_ERROR_NACK;
+}
+
+static uint8_t handle_memory_read(const uint8_t *payload, uint16_t len)
+{
+    if (!payload || len != 6) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+    uint8_t space = (payload[0] >> 2) & 0x03;
+    uint8_t slave = payload[1] >> 1;
+    uint16_t address = (uint16_t)((payload[2] << 8) | payload[3]);
+    uint16_t requested = (uint16_t)((payload[4] << 8) | payload[5]);
+    ESP_LOGI(TAG, "MEM_READ space=0x%02x slave=0x%02x address=0x%04x length=%u",
+             space, slave, address, requested);
+    if (requested == 0) return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+
+    portENTER_CRITICAL(&s_memory_mux);
+    if (s_memory_read.active) {
+        portEXIT_CRITICAL(&s_memory_mux);
+        send_memory_read_error(MEMORY_ERROR_BUSY, address);
+        return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+    }
+    s_memory_read.active = true;
+    s_memory_read.space = space;
+    s_memory_read.slave = slave;
+    s_memory_read.address = address;
+    s_memory_read.remaining = requested;
+    portEXIT_CRITICAL(&s_memory_mux);
+    if (s_memory_read_task) xTaskNotifyGive(s_memory_read_task);
+    return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+}
+
+static void memory_read_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        for (;;) {
+            uint8_t space, slave, chunk;
+            uint16_t address;
+            portENTER_CRITICAL(&s_memory_mux);
+            if (!s_memory_read.active || s_memory_read.remaining == 0) {
+                s_memory_read.active = false;
+                portEXIT_CRITICAL(&s_memory_mux);
+                break;
+            }
+            space = s_memory_read.space;
+            slave = s_memory_read.slave;
+            address = s_memory_read.address;
+            chunk = s_memory_read.remaining > MEMORY_REPORT_DATA_LEN ?
+                    MEMORY_REPORT_DATA_LEN : (uint8_t)s_memory_read.remaining;
+            portEXIT_CRITICAL(&s_memory_mux);
+
+            uint8_t bytes[MEMORY_REPORT_DATA_LEN] = {0};
+            uint8_t error = read_wiimote_memory(space, slave, address, chunk, bytes);
+            if (error != MEMORY_ERROR_SUCCESS) {
+                send_memory_read_error(error, address);
+                portENTER_CRITICAL(&s_memory_mux);
+                s_memory_read.active = false;
+                portEXIT_CRITICAL(&s_memory_mux);
+                break;
+            }
+            send_memory_read_reply(error, address, bytes, chunk);
+            portENTER_CRITICAL(&s_memory_mux);
+            s_memory_read.address = (uint16_t)(s_memory_read.address + chunk);
+            s_memory_read.remaining = (uint16_t)(s_memory_read.remaining - chunk);
+            bool more = s_memory_read.remaining != 0;
+            portEXIT_CRITICAL(&s_memory_mux);
+            if (more) vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+}
+
+static uint8_t handle_memory_write(const uint8_t *payload, uint16_t len)
+{
+    if (!payload || len != 21) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+    uint8_t space = (payload[0] >> 2) & 0x03;
+    uint8_t slave = payload[1] >> 1;
+    uint16_t address = (uint16_t)((payload[2] << 8) | payload[3]);
+    uint8_t count = payload[4];
+    ESP_LOGI(TAG, "MEM_WRITE space=0x%02x slave=0x%02x address=0x%04x length=%u",
+             space, slave, address, count);
+    uint8_t error = MEMORY_ERROR_SUCCESS;
+    if (count == 0 || count > 16) {
+        error = MEMORY_ERROR_INVALID_ADDRESS;
+    } else if (space != MEMORY_SPACE_EEPROM && space != MEMORY_SPACE_I2C && space != MEMORY_SPACE_I2C_ALT) {
+        error = MEMORY_ERROR_INVALID_SPACE;
+    } else if (space == MEMORY_SPACE_EEPROM) {
+        error = MEMORY_ERROR_INVALID_ADDRESS;
+    } else if (slave == EEPROM_I2C_ADDRESS) {
+        error = MEMORY_ERROR_INVALID_ADDRESS;
+    } else if (space == MEMORY_SPACE_I2C || space == MEMORY_SPACE_I2C_ALT) {
+        if (slave == I2C_SLAVE_EXTENSION && address == I2C_REG_EXTENSION_ENABLE &&
+            count == 1 && payload[5] == 0x55) {
+            error = MEMORY_ERROR_SUCCESS;
+        } else if (slave == I2C_SLAVE_EXTENSION && address == I2C_REG_EXTENSION_ENABLE_2 &&
+                   count == 1 && payload[5] == 0x00) {
+            error = MEMORY_ERROR_SUCCESS;
+        } else {
+            error = MEMORY_ERROR_NACK;
+        }
+    }
+    send_memory_write_ack(error);
+    return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
 }
 
 static bool report_requests_ack(const uint8_t *payload, uint16_t length)
@@ -184,13 +385,9 @@ static uint8_t process_output_report(uint8_t report_id, const uint8_t *payload, 
                  continuous_reporting);
         return send_buttons();
     case REPORT_READ_MEMORY:
-        if (len != 5) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
-        ESP_LOGW(TAG, "Memory read is not included in the first connection test");
-        return ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ;
+        return handle_memory_read(payload, len);
     case REPORT_WRITE_MEMORY:
-        if (len < 5 || len > 23) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
-        ESP_LOGW(TAG, "Memory writes are not included in the first connection test");
-        return ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ;
+        return handle_memory_write(payload, len);
     default:
         ESP_LOGW(TAG, "Unsupported Wii Remote output report 0x%02x", report_id);
         return ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ;
@@ -302,6 +499,11 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             s_remote.buttons[0] = 0;
             s_remote.buttons[1] = 0;
             portEXIT_CRITICAL(&s_remote_mux);
+            s_memory_read.active = false;
+            if (!s_memory_read_task) {
+                BaseType_t task_result = xTaskCreate(memory_read_task, "memory_read", 3072, NULL, 5, &s_memory_read_task);
+                ESP_ERROR_CHECK(task_result == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+            }
             wiimote_web_set_hid_connected(true);
             ESP_LOGI(TAG, "WIIREMOTE_HID_CONNECTED peer=%s", wiimote_bt_address_string(param->open.bd_addr, peer));
             ESP_ERROR_CHECK(esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE));
