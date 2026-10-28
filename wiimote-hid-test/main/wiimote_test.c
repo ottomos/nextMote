@@ -26,6 +26,9 @@
 #define REPORT_READ_MEMORY 0x17
 #define REPORT_WRITE_MEMORY 0x16
 #define BUTTON_PAYLOAD_LEN 2
+#define BUTTON_DEMO_PRESS_MS 500
+#define BUTTON_DEMO_RELEASE_MS 250
+#define BUTTON_DEMO_ACTIVE_REPORT 0x30
 
 static const char *TAG = "espwiimote";
 static const char local_device_name[] = CONFIG_EXAMPLE_LOCAL_DEVICE_NAME;
@@ -40,9 +43,65 @@ static struct {
     bool connected;
 } s_remote;
 
+static uint8_t send_buttons(void);
+static portMUX_TYPE s_remote_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static const struct {
+    const char *name;
+    uint16_t mask;
+} s_button_sequence[] = {
+    {"A", 0x0008}, {"B", 0x0004}, {"ONE", 0x0002}, {"TWO", 0x0001},
+    {"UP", 0x0800}, {"DOWN", 0x0400}, {"LEFT", 0x0100}, {"RIGHT", 0x0200},
+    {"PLUS", 0x1000}, {"MINUS", 0x0010}, {"HOME", 0x0080},
+};
+
+static void fake_button_task(void *arg)
+{
+    (void) arg;
+    size_t index = 0;
+    ESP_LOGI(TAG, "fake button demo ready; waiting for connected report mode 0x30");
+
+    while (true) {
+        bool demo_active;
+        bool continuous_reporting;
+        portENTER_CRITICAL(&s_remote_mux);
+        demo_active = s_remote.connected &&
+                      s_remote.report_mode == BUTTON_DEMO_ACTIVE_REPORT;
+        continuous_reporting = s_remote.continuous_reporting;
+        portEXIT_CRITICAL(&s_remote_mux);
+        if (!demo_active) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        const uint16_t mask = s_button_sequence[index].mask;
+        portENTER_CRITICAL(&s_remote_mux);
+        s_remote.buttons[0] = (uint8_t) (mask & 0xff);
+        s_remote.buttons[1] = (uint8_t) (mask >> 8);
+        portEXIT_CRITICAL(&s_remote_mux);
+        ESP_LOGI(TAG, "FAKE_BUTTON press %s (continuous=%d)",
+                 s_button_sequence[index].name, continuous_reporting);
+        (void) send_buttons();
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_DEMO_PRESS_MS));
+
+        portENTER_CRITICAL(&s_remote_mux);
+        s_remote.buttons[0] = 0;
+        s_remote.buttons[1] = 0;
+        portEXIT_CRITICAL(&s_remote_mux);
+        ESP_LOGI(TAG, "FAKE_BUTTON release %s", s_button_sequence[index].name);
+        if (continuous_reporting) (void) send_buttons();
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_DEMO_RELEASE_MS));
+
+        index = (index + 1) % (sizeof(s_button_sequence) / sizeof(s_button_sequence[0]));
+    }
+}
+
 static uint8_t send_input(uint8_t report_id, const uint8_t *data, uint16_t len)
 {
-    if (!s_remote.connected) return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+    portENTER_CRITICAL(&s_remote_mux);
+    bool connected = s_remote.connected;
+    portEXIT_CRITICAL(&s_remote_mux);
+    if (!connected) return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     esp_err_t err = esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, report_id, len, (uint8_t *)data);
     ESP_LOGI(TAG, "tx id=0x%02x length=%u status=%s", report_id, len, esp_err_to_name(err));
     return err == ESP_OK ? ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS : ESP_HID_PAR_HANDSHAKE_RSP_NOT_READY;
@@ -50,12 +109,24 @@ static uint8_t send_input(uint8_t report_id, const uint8_t *data, uint16_t len)
 
 static uint8_t send_buttons(void)
 {
-    return send_input(REPORT_BUTTONS, s_remote.buttons, sizeof(s_remote.buttons));
+    uint8_t buttons[BUTTON_PAYLOAD_LEN];
+    portENTER_CRITICAL(&s_remote_mux);
+    memcpy(buttons, s_remote.buttons, sizeof(buttons));
+    portEXIT_CRITICAL(&s_remote_mux);
+    return send_input(REPORT_BUTTONS, buttons, sizeof(buttons));
 }
 
 static uint8_t send_status(void)
 {
-    uint8_t payload[6] = {s_remote.buttons[0], s_remote.buttons[1], s_remote.leds, 0, 0, 0xc0};
+    uint8_t payload[6];
+    portENTER_CRITICAL(&s_remote_mux);
+    payload[0] = s_remote.buttons[0];
+    payload[1] = s_remote.buttons[1];
+    payload[2] = s_remote.leds;
+    portEXIT_CRITICAL(&s_remote_mux);
+    payload[3] = 0;
+    payload[4] = 0;
+    payload[5] = 0xc0;
     return send_input(REPORT_STATUS, payload, sizeof(payload));
 }
 
@@ -78,7 +149,9 @@ static uint8_t process_output_report(uint8_t report_id, const uint8_t *payload, 
     switch (report_id) {
     case REPORT_LED:
         if (len != 1) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+        portENTER_CRITICAL(&s_remote_mux);
         s_remote.leds = payload[0] & 0xf0;
+        portEXIT_CRITICAL(&s_remote_mux);
         ESP_LOGI(TAG, "LED state=0x%02x", s_remote.leds);
         return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     case REPORT_STATUS_REQUEST:
@@ -87,10 +160,13 @@ static uint8_t process_output_report(uint8_t report_id, const uint8_t *payload, 
         return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     case REPORT_MODE:
         if (len != 2) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+        portENTER_CRITICAL(&s_remote_mux);
         s_remote.report_mode = payload[1];
         s_remote.continuous_reporting = (payload[0] & 0x04) != 0;
+        bool continuous_reporting = s_remote.continuous_reporting;
+        portEXIT_CRITICAL(&s_remote_mux);
         ESP_LOGI(TAG, "report mode=0x%02x flags=0x%02x (continuous=%d)", payload[1], payload[0],
-                 s_remote.continuous_reporting);
+                 continuous_reporting);
         return send_buttons();
     case REPORT_READ_MEMORY:
         if (len != 5) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
@@ -205,7 +281,9 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         ESP_LOGI(TAG, "HID open result=%d state=%d", param->open.status, param->open.conn_status);
         if (param->open.status == ESP_HIDD_SUCCESS && param->open.conn_status == ESP_HIDD_CONN_STATE_CONNECTED) {
             char peer[18];
+            portENTER_CRITICAL(&s_remote_mux);
             s_remote.connected = true;
+            portEXIT_CRITICAL(&s_remote_mux);
             ESP_LOGI(TAG, "WIIREMOTE_HID_CONNECTED peer=%s", wiimote_bt_address_string(param->open.bd_addr, peer));
             ESP_ERROR_CHECK(esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE));
             s_remote.connected = true;
@@ -216,7 +294,11 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
     case ESP_HIDD_CLOSE_EVT:
         ESP_LOGI(TAG, "HID close result=%d state=%d", param->close.status, param->close.conn_status);
         if (param->close.conn_status == ESP_HIDD_CONN_STATE_DISCONNECTED) {
+            portENTER_CRITICAL(&s_remote_mux);
             s_remote.connected = false;
+            s_remote.buttons[0] = 0;
+            s_remote.buttons[1] = 0;
+            portEXIT_CRITICAL(&s_remote_mux);
             enter_sync_discoverable();
         }
         break;
@@ -270,7 +352,11 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
     case ESP_HIDD_VC_UNPLUG_EVT:
         ESP_LOGI(TAG, "virtual cable unplug result=%d state=%d", param->vc_unplug.status, param->vc_unplug.conn_status);
         if (param->vc_unplug.conn_status == ESP_HIDD_CONN_STATE_DISCONNECTED) {
+            portENTER_CRITICAL(&s_remote_mux);
             s_remote.connected = false;
+            s_remote.buttons[0] = 0;
+            s_remote.buttons[1] = 0;
+            portEXIT_CRITICAL(&s_remote_mux);
             enter_sync_discoverable();
         }
         break;
@@ -317,4 +403,8 @@ void app_main(void)
              local_address[0], local_address[1], local_address[2], local_address[3], local_address[4], local_address[5]);
 
     ESP_ERROR_CHECK(esp_bt_hid_device_init());
+#if CONFIG_EXAMPLE_FAKE_BUTTON_DEMO
+    BaseType_t task_result = xTaskCreate(fake_button_task, "fake_button_demo", 4096, NULL, 5, NULL);
+    ESP_ERROR_CHECK(task_result == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+#endif
 }

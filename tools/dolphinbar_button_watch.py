@@ -13,17 +13,17 @@ BUTTON_REPORT_ID = 0x30
 # Core-button masks as documented by WiiBrew. The two button bytes are
 # assembled little-endian: first byte is the low byte, second is the high byte.
 BUTTON_NAMES = {
-    0x0001: "LEFT",
-    0x0002: "RIGHT",
-    0x0004: "DOWN",
-    0x0008: "UP",
-    0x0010: "PLUS",
-    0x0100: "TWO",
-    0x0200: "ONE",
-    0x0400: "B",
-    0x0800: "A",
-    0x1000: "MINUS",
-    0x8000: "HOME",
+    0x0001: "TWO",
+    0x0002: "ONE",
+    0x0004: "B",
+    0x0008: "A",
+    0x0010: "MINUS",
+    0x0080: "HOME",
+    0x0100: "LEFT",
+    0x0200: "RIGHT",
+    0x0400: "DOWN",
+    0x0800: "UP",
+    0x1000: "PLUS",
 }
 
 
@@ -39,7 +39,10 @@ def get_hidraw_node(hid_path: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seconds", type=float, default=15.0)
+    parser.add_argument("--slot", type=int, help="DolphinBar slot number (1-4); default auto-selects the first responding slot")
     args = parser.parse_args()
+    if args.slot is not None and not 1 <= args.slot <= 4:
+        parser.error("--slot must be between 1 and 4")
 
     hid_root = "/sys/bus/hid/devices"
     slots = sorted(
@@ -49,6 +52,11 @@ def main() -> None:
     )
     if len(slots) != 4:
         raise SystemExit(f"Expected 4 DolphinBar slots; found {len(slots)}")
+
+    if args.slot is not None:
+        if args.slot > len(slots):
+            raise SystemExit(f"Requested slot {args.slot}, but only {len(slots)} HID slots were found")
+        slots = [slots[args.slot - 1]]
 
     connected_node = None
     for slot in slots:
@@ -81,7 +89,7 @@ def main() -> None:
         deadline = time.monotonic() + max(1.0, args.seconds)
         seen = 0
         last_buttons = None
-        print(f"Watching report 0x30 for up to {args.seconds:g}s; no pairing or button commands sent.", flush=True)
+        print(f"Watching report 0x30 for up to {args.seconds:g}s on {slot}; no pairing or button commands sent.", flush=True)
         while time.monotonic() < deadline:
             ready, _, _ = select.select([fd], [], [], min(0.25, deadline - time.monotonic()))
             if not ready:

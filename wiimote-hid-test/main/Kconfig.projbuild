@@ -24,4 +24,13 @@ menu "HID Example Configuration"
             that behaviour. Disable it to fall back to general discoverable
             mode (CoD 0x000504) if the host performs a general inquiry
             instead. Verify the measured CoD with "hcitool inq --flush".
+
+    config EXAMPLE_FAKE_BUTTON_DEMO
+        bool "Cycle fake core buttons while connected"
+        depends on BT_CLASSIC_ENABLED
+        default y
+        help
+            Repeatedly press and release each of the 11 Wii Remote core
+            buttons in sequence after the host selects continuous report 0x30.
+            Disable this when using physical buttons or application input.
 endmenu
