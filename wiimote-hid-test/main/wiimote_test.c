@@ -28,6 +28,10 @@
 #define REPORT_ACK REPORT_WRITE_DATA_ACK
 #define REPORT_READ_MEMORY 0x17
 #define REPORT_WRITE_MEMORY 0x16
+#define REPORT_IR_ENABLE 0x13
+#define REPORT_IR_ENABLE_2 0x1a
+#define REPORT_SPEAKER_ENABLE 0x14
+#define REPORT_SPEAKER_MUTE 0x19
 #define BUTTON_PAYLOAD_LEN 2
 #define MEMORY_REPORT_DATA_LEN 16
 #define MEMORY_REPORT_PAYLOAD_LEN 21
@@ -196,6 +200,8 @@ static void send_memory_read_reply(uint8_t error, uint16_t address, const uint8_
     payload[3] = (uint8_t)(address >> 8);
     payload[4] = (uint8_t)address;
     if (data && length) memcpy(payload + 5, data, length);
+    ESP_LOGI(TAG, "MEM_READ_REPLY addr=0x%04x size=%u error=%u", address, length, error);
+    ESP_LOG_BUFFER_HEX(TAG, payload, sizeof(payload));
     (void) send_input(REPORT_READ_DATA_REPLY, payload, sizeof(payload));
 }
 
@@ -209,6 +215,9 @@ static void send_memory_read_error(uint8_t error, uint16_t address)
     payload[2] = (uint8_t)(0xf0 | (error & 0x0f));
     payload[3] = (uint8_t)(address >> 8);
     payload[4] = (uint8_t)address;
+    ESP_LOGI(TAG, "MEM_READ_ERROR_REPLY addr=0x%04x error=%u size_minus_one=15",
+             address, error);
+    ESP_LOG_BUFFER_HEX(TAG, payload, sizeof(payload));
     (void) send_input(REPORT_READ_DATA_REPLY, payload, sizeof(payload));
 }
 
@@ -229,7 +238,8 @@ static uint8_t read_wiimote_memory(uint8_t space, uint8_t slave, uint16_t addres
             memcpy(output, calibration, sizeof(calibration));
             return MEMORY_ERROR_SUCCESS;
         }
-        if (address + length > 0x1700) return MEMORY_ERROR_INVALID_ADDRESS;
+        if (address >= 0x1700 || (uint32_t)address + length > 0x1700)
+            return MEMORY_ERROR_INVALID_ADDRESS;
         memset(output, 0, length);
         return MEMORY_ERROR_SUCCESS;
     }
@@ -369,6 +379,18 @@ static uint8_t process_output_report(uint8_t report_id, const uint8_t *payload, 
         s_remote.leds = payload[0] & 0xf0;
         portEXIT_CRITICAL(&s_remote_mux);
         ESP_LOGI(TAG, "LED state=0x%02x", s_remote.leds);
+        return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+    case REPORT_IR_ENABLE:
+    case REPORT_IR_ENABLE_2:
+    case REPORT_SPEAKER_ENABLE:
+    case REPORT_SPEAKER_MUTE:
+        if (len != 1) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+        ESP_LOGI(TAG, "Feature output id=0x%02x enable=%u (sensor/audio hardware absent)",
+                 report_id, (payload[0] & 0x04) != 0);
+        return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+    case 0x10:
+        if (len != 1) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+        ESP_LOGI(TAG, "Rumble state=%u (motor hardware absent)", payload[0] & 1);
         return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     case REPORT_STATUS_REQUEST:
         if (len != 1) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;

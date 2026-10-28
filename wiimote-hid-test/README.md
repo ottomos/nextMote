@@ -10,7 +10,9 @@ This ESP-IDF project configures the original ESP32 as a Bluetooth Classic HID pe
 - Web-generated core-button reports have been observed at the DolphinBar USB slot with the slot watcher.
 - A cold connection was observed with serial log `WIIREMOTE_HID_CONNECTED peer=...` and DolphinBar slot status.
 
-This verifies the ESP32↔DolphinBar/report path—not that a Wii, Dolphin or a specific game fully accepts the emulated controller. In the user's current Dolphin/FIFA 15 test, a real Wiimote works but ESPmote game input has not yet been demonstrated. FIFA 15 displays a prompt asking to press A without touching the Nunchuk stick to reconnect. This firmware does not advertise/report a real Nunchuk or analog stick, so the prompt is consistent with an unimplemented expansion path. The latest memory/init handlers build and are flashed, but their behavior has not been validated against the game's initialization trace. Flashing resets the HID link; press SYNC on the bar again before testing.
+The DolphinBar transport and button-report path are verified. The user now reports Mario Kart Wii accepts ESPmote A input in Dolphin and continues working after closing/restarting the game. This demonstrates a limited game-level pass for this Dolphin + DolphinBar mode 4 + ESP32 setup; the user also closed/restarted Mario Kart Wii and confirmed it continued working. This is not general compatibility or a Wii/Wii U hardware pass. The exact protocol change responsible is not isolated.
+
+The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. Dolphin's reference behavior is invalid-address error 8; ESPmote returned `00 00 F8 17 70 00 ...` (metadata `0xf8`: size-minus-one 15, error 8). The host then changed report mode and requested status. The trace also shows feature report `0x1A` with ACK requested; firmware now accepts and success-ACKs it. No calibration read at `0x0016` was observed in that trace. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect. Flashing resets the HID link; press SYNC if it no longer reconnects.
 
 ## Current behavior and missing real-Wiimote features
 
@@ -21,7 +23,7 @@ The firmware does **not** yet provide:
 - Physical GPIO/button input.
 - A real Nunchuk, Classic Controller or other extension; no analog stick is available.
 - Live accelerometer/motion data, IR camera/pointing, speaker output or rumble motor output.
-- Full EEPROM/calibration and extension-I2C register behavior. Current memory handling provides a synthetic calibration block, accepts extension disable/reset writes, and returns NACK/no-extension responses; it is not a complete EEPROM/I2C device model. The latest implementation has not yet been tested with Dolphin/FIFA 15 after the update. Memory reads are queued to a dedicated task and paced in 10 ms intervals between 16-byte reports.
+- Full EEPROM/calibration and extension-I2C register behavior. Current memory handling provides a synthetic calibration block, accepts extension disable/reset writes, and returns NACK/no-extension responses; it is not a complete EEPROM/I2C device model. The latest implementation has not yet been validated with Dolphin/Mario Kart Wii after the update. Memory reads are queued to a dedicated task and paced in 10 ms intervals between 16-byte reports.
 - Verified Dolphin/game compatibility, Wii/Wii U native/vWii compatibility, reconnect-after-reset or soak-test results.
 
 Some games require extension or motion data and will not work with this implementation. The current FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional Wiimote initialization/report handling beyond pairing and a button report.
