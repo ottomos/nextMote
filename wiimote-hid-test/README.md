@@ -11,7 +11,7 @@ Verified on ESP32-WROOM + Mayflash DolphinBar (mode 4):
 - Host report-mode and LED configuration received
 - Status request received from the bar and status report returned through USB
 
-The `fake-buttons` branch adds a demo that cycles through all 11 core buttons. After the DolphinBar selects report mode `0x30`, it sends a 500 ms press followed by a 250 ms neutral release per button, continuously while connected. Disable `EXAMPLE_FAKE_BUTTON_DEMO` under **HID Example Configuration** in `idf.py menuconfig` to turn it off.
+The `wifi-web-buttons` branch adds a web controller for direct button presses; it sends the button mask while held and clears it on release. Configure SSID/password in `idf.py menuconfig` under **HID Example Configuration**. Credentials are stored only in ignored local `sdkconfig` and are excluded from version control. The automatic fake-button cycle is disabled by default here.
 
 Not implemented or verified: physical-button input, motion/IR, extensions, rumble, speaker, Dolphin UI recognition, Wii/Wii U compatibility, or persistent reconnect behavior. Unsupported host output reports are logged; HID transport success alone does not imply application compatibility.
 

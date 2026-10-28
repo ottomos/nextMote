@@ -45,7 +45,7 @@ The default configuration advertises `Nintendo RVL-CNT-01` and enables limited-d
    python3 tools/dolphinbar_button_watch.py --slot N --seconds 60
    ```
 
-   The demo sends `FAKE_BUTTON press NAME` / release logs on ESP32 serial and the watcher should report the matching press followed by `[none]`.
+   The fake-button branch sends `FAKE_BUTTON press NAME` / release logs on ESP32 serial. The Wi-Fi web-control branch sends live press/release states from the page instead of cycling.
 
 The monitor shows ESP32 serial events and bar USB slot occupancy together. A successful test should show a legacy PIN request, authentication success, `WIIREMOTE_HID_CONNECTED`, a configured report mode, and an occupied DolphinBar slot. Use `Ctrl-C` to stop. Set `--port /dev/ttyUSB0` if automatic serial-port detection chooses the wrong device; use `--seconds 600` for a ten-minute observation window.
 
@@ -62,7 +62,10 @@ The slot probe and watcher are read-only with respect to pairing. Do not run the
 ## Current scope and limitations
 
 - **Verified:** Bluetooth Classic pairing with the DolphinBar, HID channels open, host report-mode/LED setup, and a status request/reply through a DolphinBar slot.
-- **Available in the `fake-buttons` branch:** a demo cycles through all 11 core buttons with a 500 ms press / 250 ms neutral release. This is synthetic test input, not physical-button support.
+- The `wifi-web-buttons` branch adds a Wi-Fi-connected HTTP controller page for direct button press/release input. Enter your SSID/password with `idf.py menuconfig` under **HID Example Configuration**; credentials are stored in ignored local `sdkconfig`, never in tracked defaults or source.
+
+After flashing and connecting the ESP32 to the same LAN, open the `http://<ESP32-IP>/` address printed in the serial log. Press and hold buttons on the on-screen remote; release them to clear the corresponding HID bits. The page shows the current Wi-Fi address and HID connection state.
+- The `fake-buttons` branch provides an optional cycle through all 11 core buttons with a 500 ms press / 250 ms neutral release. This is synthetic test input, not physical-button support.
 - **Not yet implemented:** accelerometer/gyro, IR pointer, extensions, speaker, rumble, persistent reconnect handling.
 - **Not yet verified:** Dolphin's controller UI, Wii, Wii U native/vWii, and long-duration/restart reconnect tests.
 - Some host output reports are currently unsupported. The serial log identifies them. HID transport success alone does not mean every application accepts the device.

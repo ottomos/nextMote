@@ -28,9 +28,33 @@ menu "HID Example Configuration"
     config EXAMPLE_FAKE_BUTTON_DEMO
         bool "Cycle fake core buttons while connected"
         depends on BT_CLASSIC_ENABLED
-        default y
+        default n
         help
             Repeatedly press and release each of the 11 Wii Remote core
             buttons in sequence after the host selects continuous report 0x30.
-            Disable this when using physical buttons or application input.
+            Keep disabled when using Wi-Fi web control.
+
+    config EXAMPLE_WIFI_WEB_CONTROL
+        bool "Enable Wi-Fi web button controller"
+        depends on BT_CLASSIC_ENABLED
+        default y
+        help
+            Connect as a Wi-Fi station and serve a local web page for Wii Remote
+            button press/release control. Configure the station SSID and password
+            below. Do not commit those credentials.
+
+    config EXAMPLE_WIFI_SSID
+        string "Wi-Fi SSID"
+        depends on EXAMPLE_WIFI_WEB_CONTROL
+        default ""
+        help
+            Wi-Fi station network name. Keep the password out of source control.
+
+    config EXAMPLE_WIFI_PASSWORD
+        string "Wi-Fi password"
+        depends on EXAMPLE_WIFI_WEB_CONTROL
+        default ""
+        help
+            Wi-Fi station password. This value is stored in the local ignored
+            sdkconfig and compiled into firmware; never commit it.
 endmenu

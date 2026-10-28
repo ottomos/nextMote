@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "nvs_flash.h"
+#include "wiimote_web.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -45,7 +46,20 @@ static struct {
 
 static uint8_t send_buttons(void);
 static portMUX_TYPE s_remote_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_web_control_active;
 
+static void set_web_button_state(uint16_t state)
+{
+    portENTER_CRITICAL(&s_remote_mux);
+    s_web_control_active = true;
+    s_remote.buttons[0] = (uint8_t)(state & 0xff);
+    s_remote.buttons[1] = (uint8_t)(state >> 8);
+    bool send_now = s_remote.connected && s_remote.report_mode == REPORT_BUTTONS;
+    portEXIT_CRITICAL(&s_remote_mux);
+    if (send_now) (void)send_buttons();
+}
+
+#if CONFIG_EXAMPLE_FAKE_BUTTON_DEMO
 static const struct {
     const char *name;
     uint16_t mask;
@@ -69,7 +83,7 @@ static void fake_button_task(void *arg)
                       s_remote.report_mode == BUTTON_DEMO_ACTIVE_REPORT;
         continuous_reporting = s_remote.continuous_reporting;
         portEXIT_CRITICAL(&s_remote_mux);
-        if (!demo_active) {
+        if (!demo_active || s_web_control_active) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -95,6 +109,7 @@ static void fake_button_task(void *arg)
         index = (index + 1) % (sizeof(s_button_sequence) / sizeof(s_button_sequence[0]));
     }
 }
+#endif
 
 static uint8_t send_input(uint8_t report_id, const uint8_t *data, uint16_t len)
 {
@@ -283,7 +298,11 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             char peer[18];
             portENTER_CRITICAL(&s_remote_mux);
             s_remote.connected = true;
+            s_web_control_active = false;
+            s_remote.buttons[0] = 0;
+            s_remote.buttons[1] = 0;
             portEXIT_CRITICAL(&s_remote_mux);
+            wiimote_web_set_hid_connected(true);
             ESP_LOGI(TAG, "WIIREMOTE_HID_CONNECTED peer=%s", wiimote_bt_address_string(param->open.bd_addr, peer));
             ESP_ERROR_CHECK(esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE));
             s_remote.connected = true;
@@ -299,6 +318,7 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             s_remote.buttons[0] = 0;
             s_remote.buttons[1] = 0;
             portEXIT_CRITICAL(&s_remote_mux);
+            wiimote_web_set_hid_connected(false);
             enter_sync_discoverable();
         }
         break;
@@ -357,6 +377,7 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             s_remote.buttons[0] = 0;
             s_remote.buttons[1] = 0;
             portEXIT_CRITICAL(&s_remote_mux);
+            wiimote_web_set_hid_connected(false);
             enter_sync_discoverable();
         }
         break;
@@ -403,6 +424,10 @@ void app_main(void)
              local_address[0], local_address[1], local_address[2], local_address[3], local_address[4], local_address[5]);
 
     ESP_ERROR_CHECK(esp_bt_hid_device_init());
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+    wiimote_web_set_button_callback(set_web_button_state);
+    wiimote_web_start();
+#endif
 #if CONFIG_EXAMPLE_FAKE_BUTTON_DEMO
     BaseType_t task_result = xTaskCreate(fake_button_task, "fake_button_demo", 4096, NULL, 5, NULL);
     ESP_ERROR_CHECK(task_result == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
