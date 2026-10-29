@@ -5,16 +5,15 @@
 #include "ir_camera.h"
 
 #include <stddef.h>
+#include <string.h>
 
-#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sensor_i2c_bus.h"
 
 #define IR_CAMERA_I2C_ADDRESS 0x58
-#define IR_CAMERA_SDA_PIN GPIO_NUM_21
-#define IR_CAMERA_SCL_PIN GPIO_NUM_22
 #define IR_CAMERA_I2C_SPEED_HZ 100000
 #define IR_CAMERA_TRANSFER_TIMEOUT_MS 100
 #define IR_CAMERA_FRAME_SIZE 16
@@ -35,7 +34,7 @@ static const uint8_t s_init_registers[][2] = {
     {0x33, 0x33},
 };
 
-static void release_handles(void)
+static void release_device(void)
 {
     if (s_device != NULL) {
         esp_err_t err = i2c_master_bus_rm_device(s_device);
@@ -43,14 +42,6 @@ static void release_handles(void)
             ESP_LOGE(TAG, "I2C device cleanup failed: %s", esp_err_to_name(err));
         }
         s_device = NULL;
-    }
-
-    if (s_bus != NULL) {
-        esp_err_t err = i2c_del_master_bus(s_bus);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "I2C bus cleanup failed: %s", esp_err_to_name(err));
-        }
-        s_bus = NULL;
     }
 }
 
@@ -66,31 +57,31 @@ static void clear_points(ir_camera_state_t *state)
 static esp_err_t write_register(uint8_t reg, uint8_t value)
 {
     const uint8_t command[] = {reg, value};
-    return i2c_master_transmit(s_device, command, sizeof(command), IR_CAMERA_TRANSFER_TIMEOUT_MS);
+    esp_err_t err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
+    if (err != ESP_OK) return err;
+
+    err = i2c_master_transmit(s_device, command, sizeof(command),
+                              IR_CAMERA_TRANSFER_TIMEOUT_MS);
+    sensor_i2c_bus_unlock();
+    return err;
 }
 
 esp_err_t ir_camera_init(void)
 {
-    if (s_initialized || s_bus != NULL || s_device != NULL) {
+    if (s_initialized || s_device != NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    const i2c_master_bus_config_t bus_config = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = IR_CAMERA_SDA_PIN,
-        .scl_io_num = IR_CAMERA_SCL_PIN,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    esp_err_t err = i2c_new_master_bus(&bus_config, &s_bus);
+    esp_err_t err = sensor_i2c_bus_get(&s_bus);
     if (err != ESP_OK) {
         return err;
     }
 
+    err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
+    if (err != ESP_OK) return err;
     err = i2c_master_probe(s_bus, IR_CAMERA_I2C_ADDRESS, IR_CAMERA_TRANSFER_TIMEOUT_MS);
+    sensor_i2c_bus_unlock();
     if (err != ESP_OK) {
-        release_handles();
         return err;
     }
 
@@ -101,14 +92,13 @@ esp_err_t ir_camera_init(void)
     };
     err = i2c_master_bus_add_device(s_bus, &device_config, &s_device);
     if (err != ESP_OK) {
-        release_handles();
         return err;
     }
 
     for (size_t i = 0; i < sizeof(s_init_registers) / sizeof(s_init_registers[0]); ++i) {
         err = write_register(s_init_registers[i][0], s_init_registers[i][1]);
         if (err != ESP_OK) {
-            release_handles();
+            release_device();
             return err;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -135,15 +125,20 @@ esp_err_t ir_camera_read(ir_camera_state_t *state)
     }
 
     const uint8_t position_register = IR_CAMERA_REGISTER_POSITION;
-    esp_err_t err = i2c_master_transmit(s_device, &position_register, sizeof(position_register),
-                                        IR_CAMERA_TRANSFER_TIMEOUT_MS);
+    esp_err_t err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
+    if (err != ESP_OK) return err;
+
+    err = i2c_master_transmit(s_device, &position_register, sizeof(position_register),
+                              IR_CAMERA_TRANSFER_TIMEOUT_MS);
     if (err != ESP_OK) {
+        sensor_i2c_bus_unlock();
         state->detected = false;
         return err;
     }
 
     uint8_t frame[IR_CAMERA_FRAME_SIZE];
     err = i2c_master_receive(s_device, frame, sizeof(frame), IR_CAMERA_TRANSFER_TIMEOUT_MS);
+    sensor_i2c_bus_unlock();
     if (err != ESP_OK) {
         state->detected = false;
         return err;

@@ -21,6 +21,7 @@
 #include "wiimote_state.h"
 #include "wiimote_web.h"
 #include "ir_camera_service.h"
+#include "imu_service.h"
 
 static const char *TAG = "espwiimote";
 static const char local_device_name[] = CONFIG_EXAMPLE_LOCAL_DEVICE_NAME;
@@ -268,5 +269,10 @@ void app_main(void)
     ir_camera_service_start();
     wiimote_web_start();
 #endif
+    esp_err_t imu_err = imu_service_start();
+    if (imu_err != ESP_OK) {
+        ESP_LOGW(TAG, "BNO08x orientation service unavailable: %s",
+                 esp_err_to_name(imu_err));
+    }
     ESP_ERROR_CHECK(wiimote_controls_start_fake_demo());
 }

@@ -15,6 +15,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "imu_service.h"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_RETRY_LIMIT 10
@@ -84,6 +85,15 @@ static const char INDEX_HTML[] =
     ".camera-dot.off{display:none}.camera-values{width:min(420px,100%);margin:12px auto;"
     "border-collapse:collapse}.camera-values th,.camera-values td{border:1px solid #46516a;"
     "padding:8px;text-align:center}"
+    ".imu-panel{margin:18px auto;padding:18px;background:#161e2d;border:1px solid #35415a;"
+    "border-radius:22px}.imu-panel h2{text-align:center;margin:0}"
+    "#imu-status{text-align:center;color:#8fa0bf;margin:8px 0;min-height:1.5em}"
+    ".imu-layout{display:flex;gap:24px;align-items:center;justify-content:center;flex-wrap:wrap}"
+    ".imu-values{min-width:180px;line-height:2}"
+    ".imu-cube-wrap{perspective:500px}"
+    "#imu-cube{width:72px;height:72px;border:2px solid #172033;"
+    "background:linear-gradient(145deg,#f29900,#f8c96b);transform-style:preserve-3d;"
+    "transition:transform 90ms linear}"
     "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
     "<div id='status'>Connecting to ESP32…</div><div id='button-status' aria-live='polite'></div>"
     "<section class='remote' aria-label='Wii Remote'>"
@@ -104,11 +114,20 @@ static const char INDEX_HTML[] =
     "<tbody><tr><td>P0</td><td id='x0'>-</td><td id='y0'>-</td></tr>"
     "<tr><td>P1</td><td id='x1'>-</td><td id='y1'>-</td></tr>"
     "<tr><td>P2</td><td id='x2'>-</td><td id='y2'>-</td></tr>"
-    "<tr><td>P3</td><td id='x3'>-</td><td id='y3'>-</td></tr></tbody></table></section></main><script>"
+    "<tr><td>P3</td><td id='x3'>-</td><td id='y3'>-</td></tr></tbody></table></section>"
+    "<section class='imu-panel' aria-label='IMU orientation'>"
+    "<h2>BNO08x orientation</h2><p id='imu-status'>Waiting for IMU data…</p>"
+    "<div class='imu-layout'><div class='imu-values'>"
+    "<div>Roll: <span id='imu-roll'>-</span>°</div>"
+    "<div>Pitch: <span id='imu-pitch'>-</span>°</div>"
+    "<div>Yaw: <span id='imu-yaw'>-</span>°</div>"
+    "</div><div class='imu-cube-wrap'><div id='imu-cube' aria-label='IMU orientation box'></div>"
+    "</div></div></section></main><script>"
     "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
     "let held=new Set(),queue=Promise.resolve();"
     "const cameraStatusEl=document.querySelector('#camera-status');"
     "const cameraTracker=document.querySelector('#camera-tracker');const cameraDots=[];"
+    "const imuStatusEl=document.querySelector('#imu-status');const imuCube=document.querySelector('#imu-cube');"
     "const cameraColors=['#ea4335','#1a73e8','#188038','#f29900'];"
     "for(let i=0;i<4;i++){const dot=document.createElement('div');dot.className='camera-dot off';"
     "dot.style.background=cameraColors[i];dot.textContent=i;cameraTracker.appendChild(dot);cameraDots.push(dot)}"
@@ -145,7 +164,22 @@ static const char INDEX_HTML[] =
     "cameraDots[i].style.left=(p.x/1023*cameraTracker.clientWidth)+'px';"
     "cameraDots[i].style.top=(p.y/1023*cameraTracker.clientHeight)+'px';"
     "cameraDots[i].classList.remove('off')}}catch(e){cameraStatusEl.textContent='Camera data request failed'}}"
-    "updateCamera();setInterval(updateCamera,120);</script></body></html>";
+    "async function updateImu(){try{const r=await fetch('/api/imu',{cache:'no-store'});"
+    "if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();"
+    "imuStatusEl.textContent=!d.detected?'BNO08x not detected · check wiring':"
+    "!d.available?'BNO08x found at 0x'+d.address.toString(16).padStart(2,'0')+' · waiting for orientation':"
+    "'Live orientation · 0x'+d.address.toString(16).padStart(2,'0');"
+    "if(d.available){const roll=d.roll,pitch=d.pitch,yaw=d.yaw;"
+    "document.querySelector('#imu-roll').textContent=roll.toFixed(1);"
+    "document.querySelector('#imu-pitch').textContent=pitch.toFixed(1);"
+    "document.querySelector('#imu-yaw').textContent=yaw.toFixed(1);"
+    "imuCube.style.transform=`rotateX(${pitch}deg) rotateY(${roll}deg) rotateZ(${yaw}deg)`}"
+    "else{document.querySelector('#imu-roll').textContent='-';"
+    "document.querySelector('#imu-pitch').textContent='-';"
+    "document.querySelector('#imu-yaw').textContent='-';imuCube.style.transform='none'}}"
+    "catch(e){imuStatusEl.textContent='IMU data request failed'}}"
+    "updateCamera();setInterval(updateCamera,120);updateImu();setInterval(updateImu,120);"
+    "</script></body></html>";
 
 static uint16_t get_button_mask(const char *name)
 {
@@ -210,6 +244,32 @@ static esp_err_t camera_handler(httpd_req_t *req)
                          (unsigned)state.x[3], (unsigned)state.y[3]);
     if (length < 0 || (size_t)length >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera response formatting failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, response, (ssize_t)length);
+}
+
+static esp_err_t imu_handler(httpd_req_t *req)
+{
+    imu_state_t state;
+    imu_service_get_state(&state);
+
+    char response[192];
+    int length = snprintf(response, sizeof(response),
+                          "{\"detected\":%s,\"available\":%s,\"address\":%u,"
+                          "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f}",
+                          state.detected ? "true" : "false",
+                          state.available ? "true" : "false",
+                          (unsigned)state.address,
+                          (double)state.roll_deg,
+                          (double)state.pitch_deg,
+                          (double)state.yaw_deg);
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "IMU response formatting failed");
         return ESP_FAIL;
     }
 
@@ -283,6 +343,9 @@ static const httpd_uri_t s_status_uri = {
 static const httpd_uri_t s_camera_uri = {
     .uri = "/api/camera", .method = HTTP_GET, .handler = camera_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_imu_uri = {
+    .uri = "/api/imu", .method = HTTP_GET, .handler = imu_handler, .user_ctx = NULL,
+};
 static const httpd_uri_t s_button_uri = {
     .uri = "/api/button", .method = HTTP_POST, .handler = button_handler, .user_ctx = NULL,
 };
@@ -300,6 +363,7 @@ static void start_http_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_index_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_status_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_camera_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_imu_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_button_uri));
 
     esp_netif_ip_info_t info = {0};

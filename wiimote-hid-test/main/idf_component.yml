@@ -1,0 +1,3 @@
+dependencies:
+  idf: ">=5.5"
+  rinku404/bno085: "1.2.0"

@@ -1,15 +1,16 @@
-# IR camera integration status
+# Camera and IMU integration status
 
-Updated 29 October 2026 on `wiimote-ir-pointer`, based on local `main` at `10f771e`.
+Updated 29 October 2026 on `imu-addon`, based on local `main` at `bcd82a1`.
 
 ## Implemented
 
 - The DFRobot SEN0158 camera uses ESP-IDF's native I2C master driver. There is no Arduino `Wire` API or DFRobot library dependency in the firmware.
 - Startup probes I2C address `0x58`, uses the DFRobot default initialization profile (`0x06=0x90`, `0x08=0xC0`, `0x1A=0x40`), and reads four raw X/Y points from each 16-byte frame.
-- The default ESP32-WROOM bus is GPIO21 SDA / GPIO22 SCL at 100 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled.
+- The shared ESP32-WROOM I2C bus uses GPIO21 SDA / GPIO22 SCL at 100 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled; the BNO08x service is scheduled every 10 ms.
 - The existing virtual-button page now includes a live point plot and coordinate table. `GET /api/camera` returns `detected`, `available`, and four `{x,y}` values; the page refreshes these values every 120 ms.
-- On `wiimote-ir-pointer`, the camera's four raw 3-byte point records are copied into the 12 IR bytes of HID report `0x33` when the host has selected that report and enabled both IR stages. Camera changes are sent as they arrive; continuous reporting follows the host's request.
-- Camera startup is optional. If no device responds at `0x58`, initialization logs a warning, releases the I2C resources, publishes `detected:false`, and continues Bluetooth/Wi-Fi/web startup without creating the camera polling task.
+- The page also shows BNO08x roll, pitch, and yaw from `GET /api/imu`. The IMU is probed at `0x4B` and `0x4A`, matching the legacy tracker; the service requests the rotation vector at 100 Hz and converts its quaternion to Euler angles.
+- Camera points are passed into the IR portion of HID report `0x33` on the pointer branch. Both axes are mirrored in HID only; the camera plot continues to show raw sensor coordinates.
+- Camera startup is optional. If no device responds at `0x58`, initialization logs a warning, publishes `detected:false`, and continues. The shared bus remains initialized so an IMU connected without a camera can still be probed.
 - Read failures are logged and do not stop the Bluetooth HID or web controller.
 
 ## Hardware check
@@ -23,6 +24,18 @@ On the current modular firmware with the DFRobot default sensitivity profile, th
 Immediately after flashing the pointer branch, `/api/camera` first reported `detected:false` and `available:false`. The user reset the ESP32 and camera detection returned; a later sample reported two points `(416,468)` and `(162,427)` with HID connected. The user then confirmed the Wii Sports pointer appeared and tracked camera movement. This verifies basic pointer operation in that setup. The initial probe failure/reset relationship is still unexplained.
 
 The user later reported that removing camera power changed the page to “Camera not detected,” and restoring power returned camera detection. A frame showing `1023` for all points means no IR points were found; it does not mean the camera is disconnected.
+
+## BNO08x IMU orientation
+
+The legacy `espWiimote` project used the SparkFun BNO08x Arduino library with reset on GPIO26, no INT wire, a 10 ms rotation-vector interval, and address fallback `0x4B`/`0x4A`. The ESP-IDF `imu-addon` branch uses the `rinku404/bno085` ESP-IDF component instead. This component requires the active-low INT/data-ready pin, so the current wiring adds BNO INT → GPIO27 while keeping RST → GPIO26.
+
+The camera and BNO share one ESP-IDF I2C master on GPIO21/22. The bus lock keeps the camera's register-select/frame read together and serializes that transfer with BNO SH-2 service transactions. Camera initialization failure does not tear down the shared bus.
+
+`GET /api/imu` returns `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`. The web page displays the three angles and a rotating orientation cube. With the camera disconnected, the camera panel may report not detected while the IMU panel can still report readings. This branch is for orientation display/testing: BNO acceleration is not yet incorporated into Wii Remote HID accelerometer bytes.
+
+### IMU-only wiring for the test
+
+Power off and disconnect USB before wiring. Connect BNO VCC/VIN to ESP32 3V3, GND to common GND, SDA to GPIO21, SCL to GPIO22, RST to GPIO26, and active-low INT to GPIO27. Leave PS0/PS1 in I2C mode and leave AD0 at its default; firmware probes both `0x4A` and `0x4B`. Leave the camera disconnected for this test if desired. The firmware remains Wi-Fi enabled and should serve the orientation panel even when the camera is absent.
 
 ## SYNC-dependent point detection: diagnostic path
 
@@ -42,29 +55,26 @@ The native driver implements the sensor protocol and bit layout documented by DF
 ## Not implemented or not verified
 
 - Repeated/long-term operation, camera connection when it is absent at ESP32 startup, 5 V plus level-shifter wiring, and combined camera/MPU operation have not been tested. Power cycling the camera after successful initialization was reported to clear and restore detection.
-- The user reports that the camera and motion sensor worked separately in the legacy setup, but they were not tested together. The legacy assembly guide identifies the motion board as a GY-BNO08X; no BNO/MPU code is included in this branch.
+- The user previously reported that the camera and motion sensor each worked separately in the legacy setup, but they were not tested together. The `imu-addon` branch now includes BNO08x orientation acquisition and web display; current-hardware testing is still pending.
 - Raw camera points are sent in HID report `0x33` on the pointer branch. After the mirrored-axis build was flashed, the user confirmed that both pointer and buttons work in Wii Sports and Mario Kart, with pointer directions corrected. The pointer remains twitchy; smoothing, other games, and long-duration behavior remain unverified. A later API sample showed `available:true` but all points empty, so coordinate reporting may be intermittent.
 - No calibration, filtering, smoothing, point association, or higher-level tracking is implemented.
-- The camera module currently owns I2C port 0 on GPIO21/22. If another I2C sensor is added later, it must share this bus instead of trying to initialize a second master on the same pins; combined sensor operation remains untested.
+- The shared sensor I2C bus owns port 0 on GPIO21/22. Additional sensors must use this bus rather than initialize a second master on those pins; simultaneous camera/BNO hardware operation remains unverified.
 - Accelerometer values remain stationary placeholders. No camera coordinate transform, smoothing, calibration, or point association is implemented.
 
 ## Camera-only wiring
 
 Use the ESP32-WROOM-32 DevKit pinout described in [ASSEMBLY_GUIDE.html](./ASSEMBLY_GUIDE.html). This section is the camera subset only; omit all BNO08X wiring.
 
-Power off and unplug the ESP32 before wiring. Use a bidirectional I2C level shifter with a shared ground:
+Power off and unplug the ESP32 before wiring. The camera was tested powered at 3.3 V with direct I2C, so a level shifter is not required for that setup:
 
 | From | To | Purpose |
 |---|---|---|
-| ESP32 `VIN/5V` | Shifter `HV` and camera red `VCC` | 5 V camera side |
-| ESP32 `3V3` | Shifter `LV` | 3.3 V ESP32 side |
-| ESP32 `GND` | Shifter `GND` and camera black `GND` | Common ground |
-| ESP32 `GPIO21` | Shifter `LV1` | SDA, low-voltage side |
-| ESP32 `GPIO22` | Shifter `LV2` | SCL, low-voltage side |
-| Shifter `HV1` | Camera yellow `SDA` | SDA, camera side |
-| Shifter `HV2` | Camera green `SCL` | SCL, camera side |
+| ESP32 `3V3` | Camera red `VCC` | Camera power (within SEN0158 3.3–5 V range) |
+| ESP32 `GND` | Camera black `GND` | Common ground |
+| ESP32 `GPIO21` | Camera yellow `SDA` | Direct 3.3 V I2C data |
+| ESP32 `GPIO22` | Camera green `SCL` | Direct 3.3 V I2C clock |
 
-Keep the camera's SDA/SCL on the shifter's HV side; do not connect those wires directly to ESP32 GPIO. The legacy guide describes the camera's operating range as 3.3-5 V but uses 5 V camera-side wiring with level shifting. Follow the module and board markings, and verify that the ESP32 board's `VIN/5V` rail is powered before connecting the camera.
+If powering the camera from 5 V instead, use the level shifter: ESP32 3V3 to LV, ESP32 5V to HV, GPIO21/22 to LV1/LV2, and camera SDA/SCL to HV1/HV2. Do not connect 5 V camera data lines directly to ESP32 GPIO.
 
 ## Build and view
 
@@ -75,6 +85,6 @@ idf.py set-target esp32
 idf.py build
 ```
 
-After a future hardware test, open the ESPmote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons. The endpoint can also be inspected directly at `/api/camera`.
+Open the ESPmote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons; the BNO08x orientation panel shows roll/pitch/yaw and a rotating cube. Inspect `/api/camera` for IR points and `/api/imu` for IMU state and Euler angles. For an IMU-only check, disconnect the camera and follow the BNO08x wiring in [ASSEMBLY_GUIDE.html](./ASSEMBLY_GUIDE.html).
 
-The merged firmware has been built and flashed. Camera acquisition was verified at 3.3 V; the guide's 5 V/level-shifter assembly and longer-term camera operation still require validation.
+The firmware build and web support are implemented. Camera acquisition at 3.3 V is verified. BNO08x hardware on the current ESP32 wiring, the new INT=GPIO27 connection, and combined camera/IMU operation still require testing.

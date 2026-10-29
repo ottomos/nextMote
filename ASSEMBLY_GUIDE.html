@@ -153,23 +153,22 @@
 <div class="wrap">
 
 <header class="hero">
-  <h1>espWiimote — Hardware Assembly Guide</h1>
+  <h1>ESPmote — Hardware Assembly Guide</h1>
   <p>
     Step-by-step wiring for the <strong>ESP32-WROOM-32</strong>, the
-    <strong>DFRobot IR Positioning Camera (SEN0158)</strong>, a
-    <strong>4-channel bi-directional level shifter</strong>, and the
-    <strong>GY-BNO08X</strong> gyro board.
+    <strong>DFRobot IR Positioning Camera (SEN0158)</strong>, and the
+    <strong>GY-BNO08X</strong> gyro board. The level shifter is optional when the
+    camera is powered from 3.3&nbsp;V; it is required for 5&nbsp;V camera wiring.
   </p>
-  <span class="badge">Current board: esp32dev · I2C SDA=GPIO21 · SCL=GPIO22 · BNO RST=GPIO26</span>
+  <span class="badge">ESP32-WROOM · I2C SDA=GPIO21 · SCL=GPIO22 · BNO RST=GPIO26 · INT=GPIO27</span>
 </header>
 
 <div class="danger">
-  <strong>⚠️ Read first — do not skip the level shifter.</strong>
-  The IR camera is treated as a <strong>5&nbsp;V</strong> device in this build. It must
-  communicate through the level shifter. Never connect the camera's data lines
-  (yellow/green) directly to the ESP32 or the BNO08X — 5&nbsp;V on a 3.3&nbsp;V pin can
-  damage the ESP32 or the sensor.
-  The BNO08X stays on the <strong>3.3&nbsp;V side</strong> at all times.
+  <strong>⚠️ Power off before wiring. Do not put 5&nbsp;V on ESP32 GPIO.</strong>
+  The SEN0158 works from 3.3–5&nbsp;V. The tested wiring powers it from ESP32
+  <strong>3V3</strong> and connects its I2C lines directly to GPIO21/22. If you instead
+  power the camera from 5&nbsp;V, route its SDA/SCL through the level shifter.
+  Keep the BNO08X on the 3.3&nbsp;V I2C side.
 </div>
 
 <h2>1. Parts list</h2>
@@ -181,7 +180,7 @@
     <tbody>
       <tr><td>1</td><td>ESP32-WROOM-32 DevKit (30-pin or 38-pin)</td><td>Power &amp; brains</td></tr>
       <tr><td>1</td><td>DFRobot IR Positioning Camera (SEN0158)</td><td>4-wire cable: red/black/yellow/green, address 0x58</td></tr>
-      <tr><td>1</td><td>4-channel bi-directional logic level shifter</td><td>HV / LV / GND ×2 / HV1..HV4 / LV1..LV4</td></tr>
+      <tr><td>1 optional</td><td>4-channel bi-directional logic level shifter</td><td>Needed only when powering the SEN0158 from 5&nbsp;V</td></tr>
       <tr><td>1</td><td>GY-BNO08X breakout (pink board)</td><td>I2C IMU, address 0x4A or 0x4B</td></tr>
       <tr><td>~10</td><td>Jumper wires (male–female helpful)</td><td>Color-coded to match the guide</td></tr>
       <tr><td>1</td><td>USB cable (5&nbsp;V)</td><td>Powers the ESP32</td></tr>
@@ -199,6 +198,7 @@
     <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">Yellow</span><span class="fn">SDA (data)</span></div>
     <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">Green</span><span class="fn">SCL (clock)</span></div>
     <div class="pin"><span class="bar" style="background:var(--rst)"></span><span class="lbl">Blue</span><span class="fn">RST (reset)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--int)"></span><span class="lbl">Purple</span><span class="fn">INT (data ready)</span></div>
   </div>
   <p class="note">
     <strong>The IR camera's own 4-wire cable already uses this scheme:</strong>
@@ -215,37 +215,37 @@
 <div class="card">
   <p>Only the pins used in this project are shown. The ESP32 is powered from USB (5&nbsp;V).</p>
   <div class="pinbox">
-    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">3V3</span><span class="fn">3.3&nbsp;V rail → BNO + shifter LV</span></div>
+    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">3V3</span><span class="fn">3.3&nbsp;V rail → BNO, tested camera power, optional shifter LV</span></div>
     <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">GND</span><span class="fn">common ground</span></div>
-    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">VIN / 5V</span><span class="fn">5&nbsp;V rail → shifter HV</span></div>
+    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">VIN / 5V</span><span class="fn">Optional 5&nbsp;V camera / shifter HV</span></div>
     <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">GPIO21</span><span class="fn">I2C SDA</span></div>
     <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">GPIO22</span><span class="fn">I2C SCL</span></div>
     <div class="pin"><span class="bar" style="background:var(--rst)"></span><span class="lbl">GPIO26</span><span class="fn">BNO08X RST</span></div>
+    <div class="pin"><span class="bar" style="background:var(--int)"></span><span class="lbl">GPIO27</span><span class="fn">BNO08X INT</span></div>
   </div>
   <p class="note">
     On a 30-pin DevKit, GPIO21/GPIO22 are the standard I2C pins. This matches
-    <code>Wire.begin(21, 22)</code> in <code>include/app_config.h</code> for the
-    <code>esp32dev</code> env.
+    shared sensor I2C bus used by the ESP-IDF camera and IMU drivers.
   </p>
 </div>
 
 <h3>3.2 DFRobot IR Positioning Camera (SEN0158)</h3>
 <div class="card">
   <div class="pinbox">
-    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">Red — VCC</span><span class="fn">5&nbsp;V (operating range 3.3–5&nbsp;V)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">Red — VCC</span><span class="fn">3.3&nbsp;V tested; module range 3.3–5&nbsp;V</span></div>
     <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">Black — GND</span><span class="fn">ground</span></div>
     <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">Yellow — SDA</span><span class="fn">I2C data (0x58)</span></div>
     <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">Green — SCL</span><span class="fn">I2C clock</span></div>
   </div>
   <p class="note">
-    Red and black connect to the <strong>HV (5&nbsp;V) side</strong> of the shifter (power can
-    be taken directly from the 5&nbsp;V rail). Yellow/green (data) must pass
-    <em>through</em> the shifter channels — they are the 5&nbsp;V signals being converted
-    down to 3.3&nbsp;V.
+    <strong>Tested option:</strong> red VCC → ESP32 3V3, black GND → common ground,
+    yellow SDA → GPIO21, and green SCL → GPIO22. No shifter is needed in this
+    3.3&nbsp;V configuration. For the optional 5&nbsp;V camera setup, use the shifter
+    on both SDA and SCL; never put the camera's 5&nbsp;V pull-ups directly on ESP32 pins.
   </p>
 </div>
 
-<h3>3.3 4-channel bi-directional level shifter</h3>
+<h3>3.3 Optional 4-channel bi-directional level shifter (5 V camera option)</h3>
 <div class="card">
   <p>
     The shifter has two reference rails and four data channels. Each channel
@@ -279,15 +279,15 @@
     <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">SDA</span><span class="fn">I2C data</span></div>
     <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">SCL</span><span class="fn">I2C clock</span></div>
     <div class="pin"><span class="bar" style="background:var(--rst)"></span><span class="lbl">RST</span><span class="fn">reset → GPIO26</span></div>
-    <div class="pin"><span class="bar" style="background:var(--int)"></span><span class="lbl">INT</span><span class="fn">leave unconnected (not used)</span></div>
-    <div class="pin"><span class="bar" style="background:#cbd2dd"></span><span class="lbl">PS0 / PS1 (mode)</span><span class="fn">leave unconnected = I2C</span></div>
+    <div class="pin"><span class="bar" style="background:var(--int)"></span><span class="lbl">INT</span><span class="fn">active-low data ready → GPIO27 (required)</span></div>
+    <div class="pin"><span class="bar" style="background:#cbd2dd"></span><span class="lbl">PS0 / PS1 (mode)</span><span class="fn">I2C mode; tie low if required by board revision</span></div>
     <div class="pin"><span class="bar" style="background:#cbd2dd"></span><span class="lbl">ADR / AD0 (if present)</span><span class="fn">leave unconnected = 0x4A (code probes both addresses)</span></div>
   </div>
   <p class="note">
     The firmware probes both <code>0x4A</code> and <code>0x4B</code>, so the address pin
-    position does not matter. <code>PS0/PS1</code> select the protocol — leave them
-    floating/low for I2C. The firmware uses <strong>reset-only</strong> init
-    (RST on GPIO26, no INT), which is why RST is wired but INT is not.
+    position does not matter.     <code>PS0/PS1</code> select the protocol — keep the board in I2C mode
+    (low/default as marked for your revision). The ESP-IDF driver uses both
+    <strong>RST on GPIO26</strong> and the active-low <strong>INT on GPIO27</strong>.
   </p>
 </div>
 
@@ -301,11 +301,9 @@
     <li>
       <strong>Power rails first.</strong>
       <ul>
-        <li>ESP32 <code>3V3</code> → shifter <code>LV</code> (orange)</li>
-        <li>ESP32 <code>VIN/5V</code> → shifter <code>HV</code> (red)</li>
-        <li>ESP32 <code>GND</code> → shifter <code>GND</code> (black)</li>
         <li>ESP32 <code>GND</code> → BNO08X <code>GND</code> (black)</li>
         <li>ESP32 <code>GND</code> → camera <code>black</code> (black)</li>
+        <li>If using the optional 5&nbsp;V camera setup: ESP32 <code>3V3</code> → shifter <code>LV</code> and <code>VIN/5V</code> → shifter <code>HV</code>.</li>
       </ul>
       <p class="note">Bring all grounds to a single common point.</p>
     </li>
@@ -313,35 +311,28 @@
       <strong>Power the boards.</strong>
       <ul>
         <li>ESP32 <code>3V3</code> → BNO08X <code>VCC/VIN</code> (orange)</li>
-        <li>ESP32 <code>VIN/5V</code> → camera <code>red</code> (red)</li>
+        <li>Tested: ESP32 <code>3V3</code> → camera <code>red (VCC)</code> (orange).</li>
+        <li>Optional 5&nbsp;V camera setup: ESP32 <code>VIN/5V</code> → camera <code>red</code> (red). Do not also connect camera VCC to 3V3.</li>
       </ul>
     </li>
     <li>
-      <strong>I2C data lines — 3.3&nbsp;V side (BNO + shifter LV).</strong>
+      <strong>Shared I2C data lines — 3.3&nbsp;V side.</strong>
       <ul>
-        <li>ESP32 <code>GPIO21</code> → BNO08X <code>SDA</code> (yellow)</li>
-        <li>ESP32 <code>GPIO22</code> → BNO08X <code>SCL</code> (green)</li>
-        <li>ESP32 <code>GPIO21</code> → shifter <code>LV1</code> (yellow)</li>
-        <li>ESP32 <code>GPIO22</code> → shifter <code>LV2</code> (green)</li>
+        <li>ESP32 <code>GPIO21</code> → BNO08X <code>SDA</code> and, for direct 3.3&nbsp;V camera power, camera yellow <code>SDA</code>.</li>
+        <li>ESP32 <code>GPIO22</code> → BNO08X <code>SCL</code> and, for direct 3.3&nbsp;V camera power, camera green <code>SCL</code>.</li>
+        <li>For the optional 5&nbsp;V camera setup, connect GPIO21/GPIO22 to shifter <code>LV1/LV2</code>; camera SDA/SCL go to <code>HV1/HV2</code> instead of directly to the ESP32 bus.</li>
       </ul>
     </li>
     <li>
-      <strong>I2C data lines — 5&nbsp;V side (shifter HV → camera).</strong>
-      <ul>
-        <li>shifter <code>HV1</code> → camera <code>yellow (SDA)</code> (yellow)</li>
-        <li>shifter <code>HV2</code> → camera <code>green (SCL)</code> (green)</li>
-      </ul>
-    </li>
-    <li>
-      <strong>BNO08X reset line.</strong>
+      <strong>BNO08X reset and data-ready lines.</strong>
       <ul>
         <li>ESP32 <code>GPIO26</code> → BNO08X <code>RST</code> (blue)</li>
+        <li>ESP32 <code>GPIO27</code> → BNO08X <code>INT</code> (purple, active-low data-ready)</li>
       </ul>
-      <p class="note">Leave INT, PS0/PS1, and ADR/AD0 unconnected.</p>
+      <p class="note">The ESP-IDF driver requires INT. Keep PS0/PS1 in I2C mode; tie both low if your board does not provide default pull-downs. Leave ADR/AD0 at the board default; firmware probes 0x4A and 0x4B.</p>
     </li>
     <li>
-      <strong>Double-check before powering.</strong> Verify: HV=5&nbsp;V, LV=3.3&nbsp;V, camera
-      only on the HV side, BNO only on the 3.3&nbsp;V side, common ground.
+      <strong>Double-check before powering.</strong> In the tested setup, camera and BNO use 3.3&nbsp;V and share GPIO21/22. Only use the HV/LV shifter path when camera VCC is powered from 5&nbsp;V.
     </li>
   </ol>
 </div>
@@ -353,22 +344,19 @@
       <tr><th>From (ESP32)</th><th>To</th><th>Wire color</th><th>Purpose</th></tr>
     </thead>
     <tbody>
-      <tr><td><code>GND</code></td><td>shifter <code>GND</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
       <tr><td><code>GND</code></td><td>BNO08X <code>GND</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
       <tr><td><code>GND</code></td><td>camera <code>black (GND)</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
-      <tr><td><code>3V3</code></td><td>shifter <code>LV</code></td><td><span class="sw org"></span>orange</td><td>low-voltage ref</td></tr>
-      <tr><td><code>VIN / 5V</code></td><td>shifter <code>HV</code></td><td><span class="sw red"></span>red</td><td>high-voltage ref</td></tr>
-      <tr><td><code>VIN / 5V</code></td><td>camera <code>red (VCC)</code></td><td><span class="sw red"></span>red</td><td>camera power</td></tr>
       <tr><td><code>3V3</code></td><td>BNO08X <code>VCC/VIN</code></td><td><span class="sw org"></span>orange</td><td>BNO power</td></tr>
-      <tr><td><code>GPIO21</code></td><td>BNO08X <code>SDA</code></td><td><span class="sw yel"></span>yellow</td><td>I2C data (3.3&nbsp;V)</td></tr>
-      <tr><td><code>GPIO22</code></td><td>BNO08X <code>SCL</code></td><td><span class="sw grn"></span>green</td><td>I2C clock (3.3&nbsp;V)</td></tr>
-      <tr><td><code>GPIO21</code></td><td>shifter <code>LV1</code></td><td><span class="sw yel"></span>yellow</td><td>SDA low side</td></tr>
-      <tr><td><code>GPIO22</code></td><td>shifter <code>LV2</code></td><td><span class="sw grn"></span>green</td><td>SCL low side</td></tr>
-      <tr><td>shifter <code>HV1</code></td><td>camera <code>yellow (SDA)</code></td><td><span class="sw yel"></span>yellow</td><td>SDA high side</td></tr>
-      <tr><td>shifter <code>HV2</code></td><td>camera <code>green (SCL)</code></td><td><span class="sw grn"></span>green</td><td>SCL high side</td></tr>
+      <tr><td><code>3V3</code></td><td>camera <code>red (VCC)</code></td><td><span class="sw org"></span>orange</td><td>tested direct camera power</td></tr>
+      <tr><td><code>GPIO21</code></td><td>BNO08X <code>SDA</code> + camera yellow <code>SDA</code></td><td><span class="sw yel"></span>yellow</td><td>shared 3.3&nbsp;V I2C data bus</td></tr>
+      <tr><td><code>GPIO22</code></td><td>BNO08X <code>SCL</code> + camera green <code>SCL</code></td><td><span class="sw grn"></span>green</td><td>shared 3.3&nbsp;V I2C clock bus</td></tr>
       <tr><td><code>GPIO26</code></td><td>BNO08X <code>RST</code></td><td><span class="sw blu"></span>blue</td><td>BNO reset</td></tr>
+      <tr><td><code>GPIO27</code></td><td>BNO08X <code>INT</code></td><td><span class="sw" style="background:var(--int)"></span>purple</td><td>active-low data-ready (required by ESP-IDF driver)</td></tr>
+      <tr><td>Optional: <code>3V3</code> / <code>VIN/5V</code></td><td>shifter <code>LV</code> / <code>HV</code></td><td>orange / red</td><td>only for 5&nbsp;V camera option</td></tr>
+      <tr><td>Optional: <code>GPIO21/22</code></td><td>shifter <code>LV1/LV2</code>; camera SDA/SCL → <code>HV1/HV2</code></td><td>yellow / green</td><td>use instead of direct camera I2C wiring</td></tr>
     </tbody>
   </table>
+  <p class="note">For the tested 3.3&nbsp;V setup, do not connect the camera through the shifter. For the 5&nbsp;V camera alternative, use the shifter and do not also connect camera VCC to 3V3.</p>
 </div>
 
 <h2>6. Connect-all diagram</h2>
@@ -385,9 +373,10 @@
         <text x="45" y="250">GPIO21 SDA</text>
         <text x="45" y="290">GPIO22 SCL</text>
         <text x="45" y="330">GPIO26 RST</text>
+        <text x="45" y="350">GPIO27 INT</text>
       </g>
       <!-- BNO box -->
-      <rect x="720" y="120" width="150" height="180" rx="10" fill="#fff" stroke="#8e24aa" stroke-width="2"/>
+      <rect x="720" y="120" width="150" height="220" rx="10" fill="#fff" stroke="#8e24aa" stroke-width="2"/>
       <text x="795" y="145" fill="#8e24aa" font-size="13" text-anchor="middle" font-weight="700">GY-BNO08X</text>
       <g font-size="11" fill="#1f2430">
         <text x="735" y="175">VCC</text>
@@ -395,6 +384,7 @@
         <text x="735" y="235">SDA</text>
         <text x="735" y="265">SCL</text>
         <text x="735" y="295">RST</text>
+        <text x="735" y="325">INT</text>
       </g>
       <!-- Level shifter box -->
       <rect x="520" y="60" width="150" height="300" rx="10" fill="#fff" stroke="#2e9e4f" stroke-width="2"/>
@@ -442,6 +432,8 @@
       <line x1="180" y1="290" x2="735" y2="263" stroke="#2e9e4f" stroke-width="2"/>
       <!-- RST to BNO -->
       <line x1="180" y1="328" x2="735" y2="293" stroke="#1f6fd6" stroke-width="2"/>
+      <!-- INT to BNO -->
+      <line x1="180" y1="348" x2="735" y2="323" stroke="#8e24aa" stroke-width="2"/>
       <!-- HV1 to camera SDA -->
       <line x1="520" y1="228" x2="315" y2="218" stroke="#e0a800" stroke-width="2"/>
       <!-- HV2 to camera SCL -->
@@ -463,7 +455,7 @@
         <text x="526" y="404" fill="#1f2430">RST</text>
       </g>
     </svg>
-    <figcaption>Schematic-style overview. Data lines are shared — the BNO sits directly on the 3.3&nbsp;V bus while the camera is reached through the shifter.</figcaption>
+    <figcaption>This diagram shows the optional 5&nbsp;V camera/shifter setup. For the tested 3.3&nbsp;V camera setup, omit the shifter and connect camera SDA/SCL directly to GPIO21/22. The BNO always uses the 3.3&nbsp;V bus and requires RST=GPIO26 plus INT=GPIO27.</figcaption>
   </div>
 </div>
 
@@ -471,27 +463,25 @@
 <div class="card">
   <ol class="steps">
     <li>Plug the USB cable in. The ESP32's power LED should light.</li>
-    <li>Flash the firmware (<code>pio run -t upload</code>) and open the serial monitor at <code>115200</code> baud.</li>
+    <li>From <code>firmware/wiimote-hid-test</code>, build and flash the ESP-IDF project (<code>idf.py build</code>, then <code>idf.py -p PORT -b 115200 flash</code>). Replace <code>PORT</code> with the ESP32 serial port.</li>
     <li>Look for the startup lines:
       <ul>
-        <li><code>IR camera found at 0x58</code> → camera detected.</li>
-        <li><code>BNO08X ready at 0x4A/0x4B (rotation vector enabled)</code> → IMU detected.</li>
+        <li><code>SEN0158 initialized with DFRobot default profile</code> → camera initialized.</li>
+        <li><code>BNO08x initialized at 0x4a</code> or <code>0x4b</code> → IMU found and rotation-vector reports enabled.</li>
       </ul>
     </li>
-    <li>The <strong>I2C scan</strong> printed on boot should list the responding
-      addresses (camera and BNO).</li>
-    <li>Once on Wi-Fi, open the web page (URL printed in serial, or
-      <code>http://ircam.local</code>) to see the live IR plot and the orientation box.</li>
+    <li>With only the BNO connected, <code>/api/imu</code> should report <code>detected:true</code>; after the first rotation-vector event it should report <code>available:true</code> and roll, pitch, and yaw in degrees.</li>
+    <li>Open the web page at the IP printed in serial to see the live IR plot and the BNO08x orientation panel. The camera may report not detected during an IMU-only test; that does not prevent the IMU panel from working.</li>
   </ol>
 
   <h3>Troubleshooting quick-reference</h3>
   <table>
     <thead><tr><th>Symptom</th><th>Likely cause</th><th>Check</th></tr></thead>
     <tbody>
-      <tr><td>No devices in I2C scan</td><td>Ground not common</td><td>All GNDs tied together (ESP32, shifter, BNO, camera)</td></tr>
-      <tr><td>BNO not found</td><td>RST wiring / power</td><td><code>RST</code> → GPIO26, <code>VCC</code> → 3V3, address pins free</td></tr>
-      <tr><td>Camera not found (0x58)</td><td>Shifter rails swapped</td><td>HV = 5&nbsp;V, LV = 3.3&nbsp;V; camera red on 5&nbsp;V</td></tr>
-      <tr><td>Camera intermittent</td><td>SDA/SCL crossed</td><td>HV1=LV1=SDA chain, HV2=LV2=SCL chain</td></tr>
+      <tr><td>BNO not found</td><td>Power, reset, INT, I2C mode, or address</td><td><code>VCC/VIN</code> → 3V3, <code>RST</code> → GPIO26, active-low <code>INT</code> → GPIO27, SDA/SCL → GPIO21/22; try both 0x4A and 0x4B.</td></tr>
+      <tr><td>IMU detected, no orientation</td><td>INT/data-ready or SH-2 service issue</td><td>Check INT continuity to GPIO27 and the serial log for report-enable/service errors.</td></tr>
+      <tr><td>Camera not found (0x58)</td><td>Power, ground, or SDA/SCL wiring</td><td>For direct wiring, camera VCC=3V3 and SDA/SCL=GPIO21/22. For 5&nbsp;V camera power, use the level shifter.</td></tr>
+      <tr><td>Camera intermittent</td><td>SDA/SCL crossed or bus contention</td><td>GPIO21 is SDA and GPIO22 is SCL; camera and BNO share one bus, with the camera-shifter only on the camera branch.</td></tr>
     </tbody>
   </table>
 </div>

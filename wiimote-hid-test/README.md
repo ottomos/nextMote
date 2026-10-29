@@ -20,6 +20,14 @@ The Wi-Fi page provides core buttons A, B, 1, 2, D-pad, Plus, Minus and Home, pl
 
 The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, the user confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
 
+On `imu-addon`, the BNO08x uses the ESP-IDF `rinku404/bno085` component on the shared GPIO21/22 I2C bus. It probes `0x4B` and `0x4A`, enables the rotation vector at 100 Hz, and exposes roll/pitch/yaw at `/api/imu`; the web page shows an orientation cube as in the legacy camera app. The current component requires BNO INT on GPIO27 and RST on GPIO26. BNO motion is displayed only; real acceleration is not yet sent in Wii Remote HID reports. Camera-only or IMU-only startup is supported in code; simultaneous sensor hardware remains to be verified.
+
+### IMU-only orientation check
+
+The IMU service shares the GPIO21/22 I2C bus but starts independently of camera detection. For an IMU-only bench test, power off the ESP32 and connect only the GY-BNO08X: VCC/VIN to 3V3, GND to common ground, SDA/SCL to GPIO21/22, RST to GPIO26, and active-low INT to GPIO27. Leave the camera disconnected. Keep PS0/PS1 in I2C mode and AD0 at its default; firmware probes `0x4B` and `0x4A`.
+
+Build and flash this branch, power up, and open the ESPmote page. The camera panel may say “Camera not detected”; the IMU panel should show the detected address and then live roll, pitch, and yaw. `GET /api/imu` returns `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`. Rotate the board by hand to confirm the values change. This tests orientation display only; BNO acceleration is not yet connected to Wii Remote HID reports.
+
 ### Wii Sports trace: requests, previous replies, and current behavior
 
 The 29 October capture showed Wii Sports selecting report `0x33` and initializing the IR device at `0x58`. These are the observed request/reply corrections now present in source and flashed:
@@ -90,6 +98,8 @@ The firmware protocol behavior was implemented in our own code after consulting:
 
 This is protocol-reference attribution, not a claim of code reuse. Any future copying/adaptation of source must be separately reviewed for license obligations and identified in the relevant files.
 
+The IMU branch obtains BNO08x support from `rinku404/bno085` v1.2.0 through ESP-IDF Component Manager. The component and its included CEVA SH2 library are Apache-2.0; the dependency version is pinned in `dependencies.lock`.
+
 ## Implementation notes
 
 - `main/wiimote_app.c` contains Classic Bluetooth setup, pairing, GAP/HID event callbacks, and app startup.
@@ -100,6 +110,8 @@ This is protocol-reference attribution, not a claim of code reuse. Any future co
 - `main/wiimote_memory.c` emulates EEPROM/I2C reads and writes for initialization.
 - `main/wiimote_controls.c` handles web button input and the optional fake-button demo.
 - `main/ir_camera_service.c` initializes and polls the SEN0158 camera for the web preview.
+- `main/sensor_i2c_bus.c` creates and serializes access to the shared camera/IMU I2C bus.
+- `main/imu_service.c` initializes the BNO08x and publishes rotation-vector orientation.
 - `main/wiimote_descriptor.c` contains the HID report descriptor.
 - `main/wiimote_identity.c` contains Bluetooth address formatting.
 - Pairing PIN handling is currently tuned for the tested DolphinBar SYNC flow. Treat 1+2 pairing and console interoperability as unverified.
