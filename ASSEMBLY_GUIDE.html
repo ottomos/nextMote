@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>espWiimote — Hardware Assembly Guide</title>
+<style>
+  :root {
+    --5v: #d64545;
+    --3v3: #ef8c00;
+    --gnd: #2b2b2b;
+    --sda: #e0a800;
+    --scl: #2e9e4f;
+    --rst: #1f6fd6;
+    --int: #8e24aa;
+    --bg: #f7f7f9;
+    --card: #ffffff;
+    --ink: #1f2430;
+    --muted: #67707e;
+    --line: #e3e6ec;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 28px 20px 80px; }
+  header.hero {
+    background: linear-gradient(135deg, #1f2430 0%, #333d54 100%);
+    color: #fff;
+    border-radius: 14px;
+    padding: 30px 32px;
+    margin-bottom: 24px;
+  }
+  header.hero h1 { margin: 0 0 8px; font-size: 28px; }
+  header.hero p { margin: 0; color: #cfd6e4; max-width: 720px; }
+  .badge {
+    display: inline-block;
+    background: rgba(255,255,255,.14);
+    color: #e8edf6;
+    border: 1px solid rgba(255,255,255,.22);
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-top: 12px;
+  }
+  h2 {
+    font-size: 20px;
+    margin: 38px 0 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--line);
+  }
+  h3 { font-size: 16px; margin: 0 0 6px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .danger {
+    background: #fff4f0;
+    border: 1px solid #f3c1b4;
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+  }
+  .danger strong { color: #b3311f; }
+  .info {
+    background: #eef5ff;
+    border: 1px solid #bcd7f7;
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f1f3f7; font-weight: 600; }
+  td code, li code, p code {
+    background: #eef0f4;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.92em;
+  }
+  .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 6px; border: 1px solid rgba(0,0,0,.2); }
+  .sw.red  { background: var(--5v); }
+  .sw.org  { background: var(--3v3); }
+  .sw.blk  { background: var(--gnd); }
+  .sw.yel  { background: var(--sda); }
+  .sw.grn  { background: var(--scl); }
+  .sw.blu  { background: var(--rst); }
+  .sw.vio  { background: var(--int); }
+  .pinmap {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .pinbox {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+  }
+  .pin {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 8px 6px;
+    text-align: center;
+    font-size: 13px;
+    background: #fff;
+  }
+  .pin .lbl { display: block; font-weight: 700; margin-top: 4px; }
+  .pin .fn  { display: block; color: var(--muted); font-size: 11.5px; }
+  .pin span.bar { display: block; height: 6px; border-radius: 3px; margin-bottom: 2px; }
+  .steps { counter-reset: step; }
+  .steps li { list-style: none; position: relative; padding-left: 42px; margin-bottom: 14px; }
+  .steps li::before {
+    counter-increment: step;
+    content: counter(step);
+    position: absolute;
+    left: 0; top: 0;
+    width: 28px; height: 28px;
+    background: #1f6fd6;
+    color: #fff;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+  }
+  .figure {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 14px;
+    text-align: center;
+    margin: 14px 0;
+  }
+  .figure figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  svg text { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .note { color: var(--muted); font-size: 13px; }
+  a { color: #1f6fd6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>espWiimote — Hardware Assembly Guide</h1>
+  <p>
+    Step-by-step wiring for the <strong>ESP32-WROOM-32</strong>, the
+    <strong>DFRobot IR Positioning Camera (SEN0158)</strong>, a
+    <strong>4-channel bi-directional level shifter</strong>, and the
+    <strong>GY-BNO08X</strong> gyro board.
+  </p>
+  <span class="badge">Current board: esp32dev · I2C SDA=GPIO21 · SCL=GPIO22 · BNO RST=GPIO26</span>
+</header>
+
+<div class="danger">
+  <strong>⚠️ Read first — do not skip the level shifter.</strong>
+  The IR camera is treated as a <strong>5&nbsp;V</strong> device in this build. It must
+  communicate through the level shifter. Never connect the camera's data lines
+  (yellow/green) directly to the ESP32 or the BNO08X — 5&nbsp;V on a 3.3&nbsp;V pin can
+  damage the ESP32 or the sensor.
+  The BNO08X stays on the <strong>3.3&nbsp;V side</strong> at all times.
+</div>
+
+<h2>1. Parts list</h2>
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>#</th><th>Part</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>ESP32-WROOM-32 DevKit (30-pin or 38-pin)</td><td>Power &amp; brains</td></tr>
+      <tr><td>1</td><td>DFRobot IR Positioning Camera (SEN0158)</td><td>4-wire cable: red/black/yellow/green, address 0x58</td></tr>
+      <tr><td>1</td><td>4-channel bi-directional logic level shifter</td><td>HV / LV / GND ×2 / HV1..HV4 / LV1..LV4</td></tr>
+      <tr><td>1</td><td>GY-BNO08X breakout (pink board)</td><td>I2C IMU, address 0x4A or 0x4B</td></tr>
+      <tr><td>~10</td><td>Jumper wires (male–female helpful)</td><td>Color-coded to match the guide</td></tr>
+      <tr><td>1</td><td>USB cable (5&nbsp;V)</td><td>Powers the ESP32</td></tr>
+      <tr><td>—</td><td>Breadboard (optional)</td><td>Makes the shared rails easier</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>2. Wire color code used in this guide</h2>
+<div class="card">
+  <div class="pinbox">
+    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">Red</span><span class="fn">5&nbsp;V power</span></div>
+    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">Orange</span><span class="fn">3.3&nbsp;V power</span></div>
+    <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">Black</span><span class="fn">Ground (GND)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">Yellow</span><span class="fn">SDA (data)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">Green</span><span class="fn">SCL (clock)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--rst)"></span><span class="lbl">Blue</span><span class="fn">RST (reset)</span></div>
+  </div>
+  <p class="note">
+    <strong>The IR camera's own 4-wire cable already uses this scheme:</strong>
+    <span class="sw red"></span> red = VCC,
+    <span class="sw blk"></span> black = GND,
+    <span class="sw yel"></span> yellow = SDA,
+    <span class="sw grn"></span> green = SCL.
+  </p>
+</div>
+
+<h2>3. Pinout reference</h2>
+
+<h3>3.1 ESP32-WROOM-32 DevKit</h3>
+<div class="card">
+  <p>Only the pins used in this project are shown. The ESP32 is powered from USB (5&nbsp;V).</p>
+  <div class="pinbox">
+    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">3V3</span><span class="fn">3.3&nbsp;V rail → BNO + shifter LV</span></div>
+    <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">GND</span><span class="fn">common ground</span></div>
+    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">VIN / 5V</span><span class="fn">5&nbsp;V rail → shifter HV</span></div>
+    <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">GPIO21</span><span class="fn">I2C SDA</span></div>
+    <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">GPIO22</span><span class="fn">I2C SCL</span></div>
+    <div class="pin"><span class="bar" style="background:var(--rst)"></span><span class="lbl">GPIO26</span><span class="fn">BNO08X RST</span></div>
+  </div>
+  <p class="note">
+    On a 30-pin DevKit, GPIO21/GPIO22 are the standard I2C pins. This matches
+    <code>Wire.begin(21, 22)</code> in <code>include/app_config.h</code> for the
+    <code>esp32dev</code> env.
+  </p>
+</div>
+
+<h3>3.2 DFRobot IR Positioning Camera (SEN0158)</h3>
+<div class="card">
+  <div class="pinbox">
+    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">Red — VCC</span><span class="fn">5&nbsp;V (operating range 3.3–5&nbsp;V)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">Black — GND</span><span class="fn">ground</span></div>
+    <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">Yellow — SDA</span><span class="fn">I2C data (0x58)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">Green — SCL</span><span class="fn">I2C clock</span></div>
+  </div>
+  <p class="note">
+    Red and black connect to the <strong>HV (5&nbsp;V) side</strong> of the shifter (power can
+    be taken directly from the 5&nbsp;V rail). Yellow/green (data) must pass
+    <em>through</em> the shifter channels — they are the 5&nbsp;V signals being converted
+    down to 3.3&nbsp;V.
+  </p>
+</div>
+
+<h3>3.3 4-channel bi-directional level shifter</h3>
+<div class="card">
+  <p>
+    The shifter has two reference rails and four data channels. Each channel
+    (HVx ↔ LVx) converts voltages in both directions — perfect for I2C. We only use
+    <strong>two channels</strong> (SDA and SCL).
+  </p>
+  <div class="pinbox">
+    <div class="pin"><span class="bar" style="background:var(--5v)"></span><span class="lbl">HV</span><span class="fn">high-voltage reference → 5&nbsp;V</span></div>
+    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">LV</span><span class="fn">low-voltage reference → 3.3&nbsp;V</span></div>
+    <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">GND</span><span class="fn">ground (both GND pins are common)</span></div>
+    <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">HV1 ↔ LV1</span><span class="fn">channel 1 → SDA</span></div>
+    <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">HV2 ↔ LV2</span><span class="fn">channel 2 → SCL</span></div>
+    <div class="pin"><span class="bar" style="background:#cbd2dd"></span><span class="lbl">HV3/HV4, LV3/LV4</span><span class="fn">unused — leave free</span></div>
+  </div>
+  <p class="note">
+    <strong>Naming:</strong> “HV” = high voltage side (5&nbsp;V, camera side).
+    “LV” = low voltage side (3.3&nbsp;V, ESP32/BNO side). The middle number is the channel.
+    Either <code>GND</code> pin works — they are the same net.
+  </p>
+</div>
+
+<h3>3.4 GY-BNO08X (pink board)</h3>
+<div class="card">
+  <p>
+    Pin order/labels can differ slightly between board revisions. Match by
+    <strong>function</strong>, not by physical position. The common 8-pin layout is:
+  </p>
+  <div class="pinbox">
+    <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">VCC / VIN</span><span class="fn">3.3&nbsp;V power</span></div>
+    <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">GND</span><span class="fn">ground</span></div>
+    <div class="pin"><span class="bar" style="background:var(--sda)"></span><span class="lbl">SDA</span><span class="fn">I2C data</span></div>
+    <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">SCL</span><span class="fn">I2C clock</span></div>
+    <div class="pin"><span class="bar" style="background:var(--rst)"></span><span class="lbl">RST</span><span class="fn">reset → GPIO26</span></div>
+    <div class="pin"><span class="bar" style="background:var(--int)"></span><span class="lbl">INT</span><span class="fn">leave unconnected (not used)</span></div>
+    <div class="pin"><span class="bar" style="background:#cbd2dd"></span><span class="lbl">PS0 / PS1 (mode)</span><span class="fn">leave unconnected = I2C</span></div>
+    <div class="pin"><span class="bar" style="background:#cbd2dd"></span><span class="lbl">ADR / AD0 (if present)</span><span class="fn">leave unconnected = 0x4A (code probes both addresses)</span></div>
+  </div>
+  <p class="note">
+    The firmware probes both <code>0x4A</code> and <code>0x4B</code>, so the address pin
+    position does not matter. <code>PS0/PS1</code> select the protocol — leave them
+    floating/low for I2C. The firmware uses <strong>reset-only</strong> init
+    (RST on GPIO26, no INT), which is why RST is wired but INT is not.
+  </p>
+</div>
+
+<h2>4. Step-by-step assembly</h2>
+<div class="card">
+  <ol class="steps">
+    <li>
+      <strong>Unplug everything from power and USB.</strong> Assemble on a non-conductive
+      surface. Never wire or re-wire while powered.
+    </li>
+    <li>
+      <strong>Power rails first.</strong>
+      <ul>
+        <li>ESP32 <code>3V3</code> → shifter <code>LV</code> (orange)</li>
+        <li>ESP32 <code>VIN/5V</code> → shifter <code>HV</code> (red)</li>
+        <li>ESP32 <code>GND</code> → shifter <code>GND</code> (black)</li>
+        <li>ESP32 <code>GND</code> → BNO08X <code>GND</code> (black)</li>
+        <li>ESP32 <code>GND</code> → camera <code>black</code> (black)</li>
+      </ul>
+      <p class="note">Bring all grounds to a single common point.</p>
+    </li>
+    <li>
+      <strong>Power the boards.</strong>
+      <ul>
+        <li>ESP32 <code>3V3</code> → BNO08X <code>VCC/VIN</code> (orange)</li>
+        <li>ESP32 <code>VIN/5V</code> → camera <code>red</code> (red)</li>
+      </ul>
+    </li>
+    <li>
+      <strong>I2C data lines — 3.3&nbsp;V side (BNO + shifter LV).</strong>
+      <ul>
+        <li>ESP32 <code>GPIO21</code> → BNO08X <code>SDA</code> (yellow)</li>
+        <li>ESP32 <code>GPIO22</code> → BNO08X <code>SCL</code> (green)</li>
+        <li>ESP32 <code>GPIO21</code> → shifter <code>LV1</code> (yellow)</li>
+        <li>ESP32 <code>GPIO22</code> → shifter <code>LV2</code> (green)</li>
+      </ul>
+    </li>
+    <li>
+      <strong>I2C data lines — 5&nbsp;V side (shifter HV → camera).</strong>
+      <ul>
+        <li>shifter <code>HV1</code> → camera <code>yellow (SDA)</code> (yellow)</li>
+        <li>shifter <code>HV2</code> → camera <code>green (SCL)</code> (green)</li>
+      </ul>
+    </li>
+    <li>
+      <strong>BNO08X reset line.</strong>
+      <ul>
+        <li>ESP32 <code>GPIO26</code> → BNO08X <code>RST</code> (blue)</li>
+      </ul>
+      <p class="note">Leave INT, PS0/PS1, and ADR/AD0 unconnected.</p>
+    </li>
+    <li>
+      <strong>Double-check before powering.</strong> Verify: HV=5&nbsp;V, LV=3.3&nbsp;V, camera
+      only on the HV side, BNO only on the 3.3&nbsp;V side, common ground.
+    </li>
+  </ol>
+</div>
+
+<h2>5. Complete wiring table</h2>
+<div class="card">
+  <table>
+    <thead>
+      <tr><th>From (ESP32)</th><th>To</th><th>Wire color</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>GND</code></td><td>shifter <code>GND</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
+      <tr><td><code>GND</code></td><td>BNO08X <code>GND</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
+      <tr><td><code>GND</code></td><td>camera <code>black (GND)</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
+      <tr><td><code>3V3</code></td><td>shifter <code>LV</code></td><td><span class="sw org"></span>orange</td><td>low-voltage ref</td></tr>
+      <tr><td><code>VIN / 5V</code></td><td>shifter <code>HV</code></td><td><span class="sw red"></span>red</td><td>high-voltage ref</td></tr>
+      <tr><td><code>VIN / 5V</code></td><td>camera <code>red (VCC)</code></td><td><span class="sw red"></span>red</td><td>camera power</td></tr>
+      <tr><td><code>3V3</code></td><td>BNO08X <code>VCC/VIN</code></td><td><span class="sw org"></span>orange</td><td>BNO power</td></tr>
+      <tr><td><code>GPIO21</code></td><td>BNO08X <code>SDA</code></td><td><span class="sw yel"></span>yellow</td><td>I2C data (3.3&nbsp;V)</td></tr>
+      <tr><td><code>GPIO22</code></td><td>BNO08X <code>SCL</code></td><td><span class="sw grn"></span>green</td><td>I2C clock (3.3&nbsp;V)</td></tr>
+      <tr><td><code>GPIO21</code></td><td>shifter <code>LV1</code></td><td><span class="sw yel"></span>yellow</td><td>SDA low side</td></tr>
+      <tr><td><code>GPIO22</code></td><td>shifter <code>LV2</code></td><td><span class="sw grn"></span>green</td><td>SCL low side</td></tr>
+      <tr><td>shifter <code>HV1</code></td><td>camera <code>yellow (SDA)</code></td><td><span class="sw yel"></span>yellow</td><td>SDA high side</td></tr>
+      <tr><td>shifter <code>HV2</code></td><td>camera <code>green (SCL)</code></td><td><span class="sw grn"></span>green</td><td>SCL high side</td></tr>
+      <tr><td><code>GPIO26</code></td><td>BNO08X <code>RST</code></td><td><span class="sw blu"></span>blue</td><td>BNO reset</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>6. Connect-all diagram</h2>
+<div class="card">
+  <div class="figure">
+    <svg viewBox="0 0 900 430" role="img" aria-label="Wiring diagram" style="max-width:100%;height:auto;">
+      <!-- ESP32 box -->
+      <rect x="30" y="60" width="150" height="300" rx="10" fill="#1f2430"/>
+      <text x="105" y="90" fill="#fff" font-size="14" text-anchor="middle" font-weight="700">ESP32-WROOM-32</text>
+      <g font-size="11" fill="#fff">
+        <text x="45" y="130">3V3</text>
+        <text x="45" y="170">GND</text>
+        <text x="45" y="210">VIN/5V</text>
+        <text x="45" y="250">GPIO21 SDA</text>
+        <text x="45" y="290">GPIO22 SCL</text>
+        <text x="45" y="330">GPIO26 RST</text>
+      </g>
+      <!-- BNO box -->
+      <rect x="720" y="120" width="150" height="180" rx="10" fill="#fff" stroke="#8e24aa" stroke-width="2"/>
+      <text x="795" y="145" fill="#8e24aa" font-size="13" text-anchor="middle" font-weight="700">GY-BNO08X</text>
+      <g font-size="11" fill="#1f2430">
+        <text x="735" y="175">VCC</text>
+        <text x="735" y="205">GND</text>
+        <text x="735" y="235">SDA</text>
+        <text x="735" y="265">SCL</text>
+        <text x="735" y="295">RST</text>
+      </g>
+      <!-- Level shifter box -->
+      <rect x="520" y="60" width="150" height="300" rx="10" fill="#fff" stroke="#2e9e4f" stroke-width="2"/>
+      <text x="595" y="85" fill="#2e9e4f" font-size="12" text-anchor="middle" font-weight="700">Level Shifter</text>
+      <text x="595" y="100" fill="#2e9e4f" font-size="10" text-anchor="middle">(HV side | LV side)</text>
+      <g font-size="11" fill="#1f2430">
+        <text x="535" y="130">HV</text>
+        <text x="535" y="160">LV</text>
+        <text x="535" y="190">GND</text>
+        <text x="535" y="230">HV1</text>
+        <text x="535" y="260">HV2</text>
+        <text x="535" y="300">LV1</text>
+        <text x="535" y="330">LV2</text>
+      </g>
+      <!-- Camera box -->
+      <rect x="300" y="60" width="150" height="300" rx="10" fill="#fff" stroke="#d64545" stroke-width="2"/>
+      <text x="375" y="90" fill="#d64545" font-size="12" text-anchor="middle" font-weight="700">DFRobot IR Camera</text>
+      <text x="375" y="105" fill="#d64545" font-size="10" text-anchor="middle">(SEN0158)</text>
+      <g font-size="11" fill="#1f2430">
+        <text x="315" y="140">red VCC</text>
+        <text x="315" y="180">black GND</text>
+        <text x="315" y="220">yellow SDA</text>
+        <text x="315" y="260">green SCL</text>
+      </g>
+
+      <!-- wires: 3V3 to LV, shifter power -->
+      <line x1="180" y1="128" x2="520" y2="158" stroke="#ef8c00" stroke-width="2"/>
+      <!-- 3V3 to BNO VCC (drawn around) -->
+      <path d="M 180 128 C 250 70, 690 70, 735 173" fill="none" stroke="#ef8c00" stroke-width="2"/>
+      <!-- GND common -->
+      <line x1="180" y1="168" x2="520" y2="188" stroke="#2b2b2b" stroke-width="2"/>
+      <line x1="180" y1="170" x2="315" y2="178" stroke="#2b2b2b" stroke-width="2"/>
+      <line x1="520" y1="190" x2="735" y2="203" stroke="#2b2b2b" stroke-width="2"/>
+      <!-- 5V to HV -->
+      <line x1="180" y1="208" x2="520" y2="128" stroke="#d64545" stroke-width="2"/>
+      <!-- 5V to camera red -->
+      <line x1="180" y1="210" x2="315" y2="138" stroke="#d64545" stroke-width="2"/>
+      <!-- SDA LV1 -->
+      <line x1="180" y1="248" x2="520" y2="298" stroke="#e0a800" stroke-width="2"/>
+      <!-- SDA to BNO -->
+      <line x1="180" y1="250" x2="735" y2="233" stroke="#e0a800" stroke-width="2"/>
+      <!-- SCL LV2 -->
+      <line x1="180" y1="288" x2="520" y2="328" stroke="#2e9e4f" stroke-width="2"/>
+      <!-- SCL to BNO -->
+      <line x1="180" y1="290" x2="735" y2="263" stroke="#2e9e4f" stroke-width="2"/>
+      <!-- RST to BNO -->
+      <line x1="180" y1="328" x2="735" y2="293" stroke="#1f6fd6" stroke-width="2"/>
+      <!-- HV1 to camera SDA -->
+      <line x1="520" y1="228" x2="315" y2="218" stroke="#e0a800" stroke-width="2"/>
+      <!-- HV2 to camera SCL -->
+      <line x1="520" y1="258" x2="315" y2="258" stroke="#2e9e4f" stroke-width="2"/>
+
+      <!-- legend -->
+      <g font-size="11">
+        <line x1="30" y1="400" x2="70" y2="400" stroke="#ef8c00" stroke-width="2"/>
+        <text x="76" y="404" fill="#1f2430">3.3V</text>
+        <line x1="120" y1="400" x2="160" y2="400" stroke="#d64545" stroke-width="2"/>
+        <text x="166" y="404" fill="#1f2430">5V</text>
+        <line x1="210" y1="400" x2="250" y2="400" stroke="#2b2b2b" stroke-width="2"/>
+        <text x="256" y="404" fill="#1f2430">GND</text>
+        <line x1="300" y1="400" x2="340" y2="400" stroke="#e0a800" stroke-width="2"/>
+        <text x="346" y="404" fill="#1f2430">SDA</text>
+        <line x1="390" y1="400" x2="430" y2="400" stroke="#2e9e4f" stroke-width="2"/>
+        <text x="436" y="404" fill="#1f2430">SCL</text>
+        <line x1="480" y1="400" x2="520" y2="400" stroke="#1f6fd6" stroke-width="2"/>
+        <text x="526" y="404" fill="#1f2430">RST</text>
+      </g>
+    </svg>
+    <figcaption>Schematic-style overview. Data lines are shared — the BNO sits directly on the 3.3&nbsp;V bus while the camera is reached through the shifter.</figcaption>
+  </div>
+</div>
+
+<h2>7. Power-on &amp; verification</h2>
+<div class="card">
+  <ol class="steps">
+    <li>Plug the USB cable in. The ESP32's power LED should light.</li>
+    <li>Flash the firmware (<code>pio run -t upload</code>) and open the serial monitor at <code>115200</code> baud.</li>
+    <li>Look for the startup lines:
+      <ul>
+        <li><code>IR camera found at 0x58</code> → camera detected.</li>
+        <li><code>BNO08X ready at 0x4A/0x4B (rotation vector enabled)</code> → IMU detected.</li>
+      </ul>
+    </li>
+    <li>The <strong>I2C scan</strong> printed on boot should list the responding
+      addresses (camera and BNO).</li>
+    <li>Once on Wi-Fi, open the web page (URL printed in serial, or
+      <code>http://ircam.local</code>) to see the live IR plot and the orientation box.</li>
+  </ol>
+
+  <h3>Troubleshooting quick-reference</h3>
+  <table>
+    <thead><tr><th>Symptom</th><th>Likely cause</th><th>Check</th></tr></thead>
+    <tbody>
+      <tr><td>No devices in I2C scan</td><td>Ground not common</td><td>All GNDs tied together (ESP32, shifter, BNO, camera)</td></tr>
+      <tr><td>BNO not found</td><td>RST wiring / power</td><td><code>RST</code> → GPIO26, <code>VCC</code> → 3V3, address pins free</td></tr>
+      <tr><td>Camera not found (0x58)</td><td>Shifter rails swapped</td><td>HV = 5&nbsp;V, LV = 3.3&nbsp;V; camera red on 5&nbsp;V</td></tr>
+      <tr><td>Camera intermittent</td><td>SDA/SCL crossed</td><td>HV1=LV1=SDA chain, HV2=LV2=SCL chain</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="info">
+  <strong>Note on the Funduino board</strong> — the Funduino is <em>not</em> wired in this
+  build. It will be added later as an optional, enable/disable feature in firmware.
+  Assemble and validate the ESP32 + camera + BNO setup above first.
+</div>
+
+<p class="note">
+  References:
+  <a href="https://wiki.dfrobot.com/sen0158/" target="_blank" rel="noopener">DFRobot SEN0158 wiki</a> ·
+  <a href="https://learn.sparkfun.com/tutorials/bi-directional-logic-level-converter-hookup-guide" target="_blank" rel="noopener">SparkFun bi-directional level shifter guide</a> ·
+  <a href="https://learn.adafruit.com/adafruit-9-dof-orientation-imu-fusion-breakout-bno085/pinouts" target="_blank" rel="noopener">Adafruit BNO08x pinouts</a>
+</p>
+
+</div>
+</body>
+</html>

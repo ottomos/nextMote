@@ -18,11 +18,13 @@ The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. D
 
 The Wi-Fi page provides core buttons A, B, 1, 2, D-pad, Plus, Minus and Home, plus A+B and 1+2 combinations. It sends held-button state and clears bits on release. SSID/password are local `sdkconfig` values configured through `idf.py menuconfig`; `sdkconfig` is ignored and must never be committed.
 
+On the `motion-addon` branch, the same page also shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. This is a diagnostic preview only; it does not send IR data through HID. The current native path is build-verified but has not been hardware-tested. See [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for camera-only wiring and limits.
+
 The firmware does **not** yet provide:
 
 - Physical GPIO/button input.
 - A real Nunchuk, Classic Controller or other extension; no analog stick is available.
-- Live accelerometer/motion data, IR camera/pointing, speaker output or rumble motor output.
+- Live accelerometer/motion data, IR HID pointing, speaker output or rumble motor output.
 - Full EEPROM/calibration and extension-I2C register behavior. Current memory handling provides a synthetic calibration block, accepts extension disable/reset writes, and returns NACK/no-extension responses; it is not a complete EEPROM/I2C device model. The latest implementation has not yet been validated with Dolphin/Mario Kart Wii after the update. Memory reads are queued to a dedicated task and paced in 10 ms intervals between 16-byte reports.
 - Verified Dolphin/game compatibility, Wii/Wii U native/vWii compatibility, reconnect-after-reset or soak-test results.
 

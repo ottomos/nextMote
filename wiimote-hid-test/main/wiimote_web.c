@@ -24,6 +24,8 @@ static const char *TAG = "wiimote_web";
 static EventGroupHandle_t s_wifi_events;
 static SemaphoreHandle_t s_button_lock;
 static uint16_t s_button_mask;
+static portMUX_TYPE s_camera_mux = portMUX_INITIALIZER_UNLOCKED;
+static ir_camera_state_t s_camera_state;
 static wiimote_web_button_callback_t s_button_callback;
 static esp_netif_t *s_station;
 static httpd_handle_t s_http_server;
@@ -68,6 +70,19 @@ static const char INDEX_HTML[] =
     "@media(max-width:460px){.remote{padding:18px;gap:8px;grid-template-rows:repeat(7,56px)}"
     ".ab button{width:62px;"
     "height:62px}.ab button:first-child{width:76px;height:76px}}"
+    ".camera-panel{margin:18px auto;padding:18px;background:#161e2d;border:1px solid #35415a;"
+    "border-radius:22px}.camera-panel h2{text-align:center;margin:0}"
+    "#camera-status{text-align:center;color:#8fa0bf;margin:8px 0;min-height:1.5em}"
+    "#camera-tracker{width:min(640px,92vw);aspect-ratio:4/3;border:2px solid #62708a;"
+    "margin:12px auto;position:relative;background:linear-gradient(90deg,rgba(255,255,255,.07) 1px,"
+    "transparent 1px) 0 0/10% 100%,linear-gradient(rgba(255,255,255,.07) 1px,transparent 1px)"
+    " 0 0/100% 10%,#111827;overflow:hidden;border-radius:12px}"
+    ".camera-dot{position:absolute;width:14px;height:14px;border-radius:50%;"
+    "transform:translate(-50%,-50%);display:grid;place-items:center;color:#fff;"
+    "font-size:10px;font-weight:bold;box-shadow:0 0 0 2px #0008}"
+    ".camera-dot.off{display:none}.camera-values{width:min(420px,100%);margin:12px auto;"
+    "border-collapse:collapse}.camera-values th,.camera-values td{border:1px solid #46516a;"
+    "padding:8px;text-align:center}"
     "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
     "<div id='status'>Connecting to ESP32…</div><section class='remote' aria-label='Wii Remote'>"
     "<div class='dpad'><button class='up' data-button='Up'>▲</button>"
@@ -80,8 +95,20 @@ static const char INDEX_HTML[] =
     "<button class='sys' style='grid-column:3;grid-row:1' data-button='Plus'>+</button>"
     "<div class='combo-row'><button class='combo' data-button='AB'>A + B</button>"
     "<button class='combo' data-button='ONE_TWO'>1 + 2</button></div>"
-    "</section></main><script>"
+    "</section><section class='camera-panel' aria-label='IR camera view'>"
+    "<h2>IR camera · SEN0158</h2><p id='camera-status'>Waiting for camera data…</p>"
+    "<div id='camera-tracker' role='img' aria-label='Live IR point plot'></div>"
+    "<table class='camera-values'><thead><tr><th>Point</th><th>X</th><th>Y</th></tr></thead>"
+    "<tbody><tr><td>P0</td><td id='x0'>-</td><td id='y0'>-</td></tr>"
+    "<tr><td>P1</td><td id='x1'>-</td><td id='y1'>-</td></tr>"
+    "<tr><td>P2</td><td id='x2'>-</td><td id='y2'>-</td></tr>"
+    "<tr><td>P3</td><td id='x3'>-</td><td id='y3'>-</td></tr></tbody></table></section></main><script>"
     "const statusEl=document.querySelector('#status');let held=new Set(),queue=Promise.resolve();"
+    "const cameraStatusEl=document.querySelector('#camera-status');"
+    "const cameraTracker=document.querySelector('#camera-tracker');const cameraDots=[];"
+    "const cameraColors=['#ea4335','#1a73e8','#188038','#f29900'];"
+    "for(let i=0;i<4;i++){const dot=document.createElement('div');dot.className='camera-dot off';"
+    "dot.style.background=cameraColors[i];dot.textContent=i;cameraTracker.appendChild(dot);cameraDots.push(dot)}"
     "function send(name,pressed){queue=queue.then(async()=>{try{let r=await fetch('/api/button',{method:'POST',"
     "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
     "body:'name='+encodeURIComponent(name)+'&pressed='+(pressed?'1':'0')});"
@@ -103,7 +130,19 @@ static const char INDEX_HTML[] =
     "fetch('/api/status').then(r=>r.json()).then(updateStatus).catch(()=>{"
     "statusEl.textContent='Controller page loaded; status unavailable'})"
     ".finally(()=>setInterval(()=>fetch('/api/status').then(r=>r.json()).then(updateStatus)"
-    ".catch(()=>{}),1000));</script></body></html>";
+    ".catch(()=>{}),1000));"
+    "async function updateCamera(){try{const r=await fetch('/api/camera',{cache:'no-store'});"
+    "if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();"
+    "cameraStatusEl.textContent=!d.detected?'Camera not detected · check wiring':"
+    "!d.available?'Camera detected · waiting for a frame':'Live camera frame';"
+    "for(let i=0;i<4;i++){const p=d.points[i];"
+    "document.getElementById('x'+i).textContent=d.available?p.x:'-';"
+    "document.getElementById('y'+i).textContent=d.available?p.y:'-';"
+    "if(!d.available||p.x>=1023||p.y>=1023){cameraDots[i].classList.add('off');continue}"
+    "cameraDots[i].style.left=(p.x/1023*cameraTracker.clientWidth)+'px';"
+    "cameraDots[i].style.top=(p.y/1023*cameraTracker.clientHeight)+'px';"
+    "cameraDots[i].classList.remove('off')}}catch(e){cameraStatusEl.textContent='Camera data request failed'}}"
+    "updateCamera();setInterval(updateCamera,120);</script></body></html>";
 
 static uint16_t get_button_mask(const char *name)
 {
@@ -133,6 +172,34 @@ static esp_err_t status_handler(httpd_req_t *req)
              s_hid_connected ? "true" : "false", ip);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, response);
+}
+
+static esp_err_t camera_handler(httpd_req_t *req)
+{
+    ir_camera_state_t state;
+    portENTER_CRITICAL(&s_camera_mux);
+    state = s_camera_state;
+    portEXIT_CRITICAL(&s_camera_mux);
+
+    char response[256];
+    int length = snprintf(response, sizeof(response),
+                         "{\"detected\":%s,\"available\":%s,\"points\":["
+                         "{\"x\":%u,\"y\":%u},{\"x\":%u,\"y\":%u},"
+                         "{\"x\":%u,\"y\":%u},{\"x\":%u,\"y\":%u}]}",
+                         state.detected ? "true" : "false",
+                         state.available ? "true" : "false",
+                         (unsigned)state.x[0], (unsigned)state.y[0],
+                         (unsigned)state.x[1], (unsigned)state.y[1],
+                         (unsigned)state.x[2], (unsigned)state.y[2],
+                         (unsigned)state.x[3], (unsigned)state.y[3]);
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera response formatting failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, response, (ssize_t)length);
 }
 
 static esp_err_t button_handler(httpd_req_t *req)
@@ -197,6 +264,9 @@ static const httpd_uri_t s_index_uri = {
 static const httpd_uri_t s_status_uri = {
     .uri = "/api/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_camera_uri = {
+    .uri = "/api/camera", .method = HTTP_GET, .handler = camera_handler, .user_ctx = NULL,
+};
 static const httpd_uri_t s_button_uri = {
     .uri = "/api/button", .method = HTTP_POST, .handler = button_handler, .user_ctx = NULL,
 };
@@ -213,6 +283,7 @@ static void start_http_server(void)
     }
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_index_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_status_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_camera_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_button_uri));
 
     esp_netif_ip_info_t info = {0};
@@ -308,4 +379,16 @@ void wiimote_web_set_hid_connected(bool connected)
 void wiimote_web_set_button_callback(wiimote_web_button_callback_t callback)
 {
     s_button_callback = callback;
+}
+
+void wiimote_web_set_camera_state(const ir_camera_state_t *state)
+{
+    if (state == NULL) {
+        ESP_LOGE(TAG, "Cannot publish a null IR camera state");
+        return;
+    }
+
+    portENTER_CRITICAL(&s_camera_mux);
+    s_camera_state = *state;
+    portEXIT_CRITICAL(&s_camera_mux);
 }
