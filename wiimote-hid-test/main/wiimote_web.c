@@ -48,6 +48,7 @@ static const char INDEX_HTML[] =
     "font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}"
     ".wrap{width:min(760px,100%);padding:20px}h1{text-align:center;margin:4px}"
     "#status{text-align:center;color:#8fa0bf;margin:6px 0 22px;min-height:1.5em}"
+    "#button-status{text-align:center;color:#8fa0bf;min-height:1.5em;margin:-16px 0 14px}"
     ".remote{background:#e8eaf0;color:#172033;border-radius:48px;padding:24px;"
     "box-shadow:0 18px 45px #0008;display:grid;grid-template-columns:1fr 1fr 1fr;"
     "grid-template-rows:repeat(7,56px);gap:12px;max-width:620px;margin:auto}"
@@ -69,7 +70,8 @@ static const char INDEX_HTML[] =
     ".ab button{width:62px;"
     "height:62px}.ab button:first-child{width:76px;height:76px}}"
     "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
-    "<div id='status'>Connecting to ESP32…</div><section class='remote' aria-label='Wii Remote'>"
+    "<div id='status'>Connecting to ESP32…</div><div id='button-status' aria-live='polite'></div>"
+    "<section class='remote' aria-label='Wii Remote'>"
     "<div class='dpad'><button class='up' data-button='Up'>▲</button>"
     "<button class='left' data-button='Left'>◀</button><button class='right' data-button='Right'>▶</button>"
     "<button class='down' data-button='Down'>▼</button></div>"
@@ -81,12 +83,13 @@ static const char INDEX_HTML[] =
     "<div class='combo-row'><button class='combo' data-button='AB'>A + B</button>"
     "<button class='combo' data-button='ONE_TWO'>1 + 2</button></div>"
     "</section></main><script>"
-    "const statusEl=document.querySelector('#status');let held=new Set(),queue=Promise.resolve();"
+    "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
+    "let held=new Set(),queue=Promise.resolve();"
     "function send(name,pressed){queue=queue.then(async()=>{try{let r=await fetch('/api/button',{method:'POST',"
     "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
     "body:'name='+encodeURIComponent(name)+'&pressed='+(pressed?'1':'0')});"
-    "if(!r.ok)throw Error(await r.text());statusEl.textContent='Connected · '+"
-    "(pressed?'Pressed ':'Released ')+name}catch(e){statusEl.textContent='Error: '+e.message}})}"
+    "if(!r.ok)throw Error(await r.text());buttonStatusEl.textContent="
+    "(pressed?'Pressed ':'Released ')+name}catch(e){buttonStatusEl.textContent='Button error: '+e.message}})}"
     "function press(b){if(held.has(b))return;held.add(b);b.classList.add('pressed');"
     "send(b.dataset.button,true)}function release(b){if(!held.has(b))return;"
     "held.delete(b);b.classList.remove('pressed');send(b.dataset.button,false)}"
@@ -100,10 +103,10 @@ static const char INDEX_HTML[] =
     "'Wi-Fi connected · '+s.ip+(s.connected?' · HID connected':' · waiting for DolphinBar'):"
     "'Wi-Fi not connected yet';statusEl.dataset.connected=s.connected?'1':'0';"
     "if(!s.connected)for(const b of document.querySelectorAll('.pressed'))release(b)}"
-    "fetch('/api/status').then(r=>r.json()).then(updateStatus).catch(()=>{"
-    "statusEl.textContent='Controller page loaded; status unavailable'})"
-    ".finally(()=>setInterval(()=>fetch('/api/status').then(r=>r.json()).then(updateStatus)"
-    ".catch(()=>{}),1000));</script></body></html>";
+    "async function refreshStatus(){try{const r=await fetch('/api/status',{cache:'no-store'});"
+    "if(!r.ok)throw Error('HTTP '+r.status);updateStatus(await r.json())}"
+    "catch(e){statusEl.textContent='ESP32 status unavailable';statusEl.dataset.connected='0'}}"
+    "refreshStatus();setInterval(refreshStatus,1000);</script></body></html>";
 
 static uint16_t get_button_mask(const char *name)
 {
@@ -120,6 +123,16 @@ static esp_err_t index_handler(httpd_req_t *req)
     return httpd_resp_send(req, INDEX_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+static bool hid_connected_snapshot(void)
+{
+    if (!s_button_lock) return false;
+
+    xSemaphoreTake(s_button_lock, portMAX_DELAY);
+    bool connected = s_hid_connected;
+    xSemaphoreGive(s_button_lock);
+    return connected;
+}
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     char ip[16] = "0.0.0.0";
@@ -128,10 +141,13 @@ static esp_err_t status_handler(httpd_req_t *req)
         snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
     }
     char response[128];
+    bool hid_connected = hid_connected_snapshot();
     snprintf(response, sizeof(response), "{\"wifi\":%s,\"connected\":%s,\"ip\":\"%s\"}",
              (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) ? "true" : "false",
-             s_hid_connected ? "true" : "false", ip);
+             hid_connected ? "true" : "false", ip);
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
     return httpd_resp_sendstr(req, response);
 }
 
@@ -296,13 +312,20 @@ void wiimote_web_start(void)
 
 void wiimote_web_set_hid_connected(bool connected)
 {
-    s_hid_connected = connected;
-    if (!connected && s_button_lock) {
+    bool changed;
+    if (s_button_lock) {
         xSemaphoreTake(s_button_lock, portMAX_DELAY);
-        s_button_mask = 0;
+        changed = s_hid_connected != connected;
+        s_hid_connected = connected;
+        if (!connected) s_button_mask = 0;
         xSemaphoreGive(s_button_lock);
-        if (s_button_callback) s_button_callback(0);
+    } else {
+        changed = s_hid_connected != connected;
+        s_hid_connected = connected;
     }
+
+    if (changed) ESP_LOGI(TAG, "DolphinBar HID %s", connected ? "connected" : "disconnected");
+    if (!connected && changed && s_button_callback) s_button_callback(0);
 }
 
 void wiimote_web_set_button_callback(wiimote_web_button_callback_t callback)

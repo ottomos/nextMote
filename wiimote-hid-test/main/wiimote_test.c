@@ -22,6 +22,8 @@
 #define REPORT_READ_DATA_REPLY 0x21
 #define REPORT_WRITE_DATA_ACK 0x22
 #define REPORT_BUTTONS 0x30
+#define REPORT_BUTTONS_ACCEL 0x31
+#define REPORT_BUTTONS_ACCEL_IR 0x33
 #define REPORT_LED 0x11
 #define REPORT_STATUS_REQUEST 0x15
 #define REPORT_MODE 0x12
@@ -35,6 +37,9 @@
 #define BUTTON_PAYLOAD_LEN 2
 #define MEMORY_REPORT_DATA_LEN 16
 #define MEMORY_REPORT_PAYLOAD_LEN 21
+#define REPORT_BUTTONS_PAYLOAD_LEN 2
+#define REPORT_BUTTONS_ACCEL_PAYLOAD_LEN 5
+#define REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN 17
 #define MEMORY_SPACE_EEPROM 0x00
 #define MEMORY_SPACE_I2C 0x01
 #define MEMORY_SPACE_I2C_ALT 0x02
@@ -45,26 +50,48 @@
 #define MEMORY_ERROR_INVALID_ADDRESS 0x08
 #define EEPROM_I2C_ADDRESS 0x50
 #define I2C_SLAVE_EXTENSION 0x52
+#define I2C_SLAVE_IR_CAMERA 0x58
 #define I2C_REG_EXTENSION_ENABLE 0xF0
 #define I2C_REG_EXTENSION_ENABLE_2 0xFB
+#define IR_CAMERA_REGISTER_COUNT 0x100
+#define IR_CAMERA_FRAME_REGISTER 0x36
+#define IR_CAMERA_FRAME_LENGTH 16
 #define BUTTON_DEMO_PRESS_MS 500
 #define BUTTON_DEMO_RELEASE_MS 250
-#define BUTTON_DEMO_ACTIVE_REPORT 0x30
 
 static const char *TAG = "espwiimote";
 static const char local_device_name[] = CONFIG_EXAMPLE_LOCAL_DEVICE_NAME;
+static const uint8_t s_neutral_accelerometer[3] = {0x80, 0x80, 0x9a};
+static const uint8_t s_empty_ir_camera_frame[IR_CAMERA_FRAME_LENGTH] = {
+    0x00,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x00, 0x00, 0x00,
+};
+/* EEPROM 0x0000-0x0029: duplicated IR and accelerometer calibration blocks. */
+static const uint8_t s_wiimote_calibration[0x2a] = {
+    0xa1, 0xaa, 0x8b, 0x99, 0xae, 0x9e, 0x78, 0x30, 0xa7, 0x74, 0xd3,
+    0xa1, 0xaa, 0x8b, 0x99, 0xae, 0x9e, 0x78, 0x30, 0xa7, 0x74, 0xd3,
+    0x80, 0x80, 0x80, 0x00, 0x9a, 0x9a, 0x9a, 0x00, 0x40, 0xe3,
+    0x80, 0x80, 0x80, 0x00, 0x9a, 0x9a, 0x9a, 0x00, 0x40, 0xe3,
+};
+static uint8_t s_ir_camera_registers[IR_CAMERA_REGISTER_COUNT];
+static portMUX_TYPE s_ir_camera_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static struct {
     esp_hidd_app_param_t app;
     esp_hidd_qos_param_t qos;
     uint8_t buttons[BUTTON_PAYLOAD_LEN];
     uint8_t leds;
+    bool ir_logic_enabled;
+    bool ir_sensor_enabled;
     uint8_t report_mode;
     bool continuous_reporting;
     bool connected;
 } s_remote;
 
-static uint8_t send_buttons(void);
+static uint8_t send_current_input_report(void);
+static uint8_t send_data_report(uint8_t report_id);
 static portMUX_TYPE s_remote_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_web_control_active;
 static portMUX_TYPE s_memory_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -77,15 +104,22 @@ static struct {
 } s_memory_read;
 static TaskHandle_t s_memory_read_task;
 
+static bool is_supported_data_report(uint8_t report_id)
+{
+    return report_id == REPORT_BUTTONS ||
+           report_id == REPORT_BUTTONS_ACCEL ||
+           report_id == REPORT_BUTTONS_ACCEL_IR;
+}
+
 static void set_web_button_state(uint16_t state)
 {
     portENTER_CRITICAL(&s_remote_mux);
     s_web_control_active = true;
     s_remote.buttons[0] = (uint8_t)(state >> 8);
     s_remote.buttons[1] = (uint8_t)(state & 0xff);
-    bool send_now = s_remote.connected && s_remote.report_mode == REPORT_BUTTONS;
+    bool send_now = s_remote.connected && is_supported_data_report(s_remote.report_mode);
     portEXIT_CRITICAL(&s_remote_mux);
-    if (send_now) (void)send_buttons();
+    if (send_now) (void)send_current_input_report();
 }
 
 #if CONFIG_EXAMPLE_FAKE_BUTTON_DEMO
@@ -109,7 +143,7 @@ static void fake_button_task(void *arg)
         bool continuous_reporting;
         portENTER_CRITICAL(&s_remote_mux);
         demo_active = s_remote.connected &&
-                      s_remote.report_mode == BUTTON_DEMO_ACTIVE_REPORT;
+                      is_supported_data_report(s_remote.report_mode);
         continuous_reporting = s_remote.continuous_reporting;
         portEXIT_CRITICAL(&s_remote_mux);
         if (!demo_active || s_web_control_active) {
@@ -124,7 +158,7 @@ static void fake_button_task(void *arg)
         portEXIT_CRITICAL(&s_remote_mux);
         ESP_LOGI(TAG, "FAKE_BUTTON press %s (continuous=%d)",
                  s_button_sequence[index].name, continuous_reporting);
-        (void) send_buttons();
+        (void) send_current_input_report();
         vTaskDelay(pdMS_TO_TICKS(BUTTON_DEMO_PRESS_MS));
 
         portENTER_CRITICAL(&s_remote_mux);
@@ -132,7 +166,7 @@ static void fake_button_task(void *arg)
         s_remote.buttons[1] = 0;
         portEXIT_CRITICAL(&s_remote_mux);
         ESP_LOGI(TAG, "FAKE_BUTTON release %s", s_button_sequence[index].name);
-        if (continuous_reporting) (void) send_buttons();
+        if (continuous_reporting) (void) send_current_input_report();
         vTaskDelay(pdMS_TO_TICKS(BUTTON_DEMO_RELEASE_MS));
 
         index = (index + 1) % (sizeof(s_button_sequence) / sizeof(s_button_sequence[0]));
@@ -151,13 +185,45 @@ static uint8_t send_input(uint8_t report_id, const uint8_t *data, uint16_t len)
     return err == ESP_OK ? ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS : ESP_HID_PAR_HANDSHAKE_RSP_NOT_READY;
 }
 
-static uint8_t send_buttons(void)
+static uint8_t send_data_report(uint8_t report_id)
 {
-    uint8_t buttons[BUTTON_PAYLOAD_LEN];
+    uint8_t payload[REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN] = {0};
     portENTER_CRITICAL(&s_remote_mux);
-    memcpy(buttons, s_remote.buttons, sizeof(buttons));
+    memcpy(payload, s_remote.buttons, BUTTON_PAYLOAD_LEN);
     portEXIT_CRITICAL(&s_remote_mux);
-    return send_input(REPORT_BUTTONS, buttons, sizeof(buttons));
+
+    uint16_t length;
+    switch (report_id) {
+    case REPORT_BUTTONS:
+        length = REPORT_BUTTONS_PAYLOAD_LEN;
+        break;
+    case REPORT_BUTTONS_ACCEL:
+        memcpy(payload + REPORT_BUTTONS_PAYLOAD_LEN, s_neutral_accelerometer,
+               sizeof(s_neutral_accelerometer));
+        length = REPORT_BUTTONS_ACCEL_PAYLOAD_LEN;
+        break;
+    case REPORT_BUTTONS_ACCEL_IR:
+        memcpy(payload + REPORT_BUTTONS_PAYLOAD_LEN, s_neutral_accelerometer,
+               sizeof(s_neutral_accelerometer));
+        memset(payload + REPORT_BUTTONS_ACCEL_PAYLOAD_LEN, 0xff,
+               REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN - REPORT_BUTTONS_ACCEL_PAYLOAD_LEN);
+        length = REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN;
+        break;
+    default:
+        ESP_LOGW(TAG, "Unsupported input report mode 0x%02x", report_id);
+        return ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ;
+    }
+
+    return send_input(report_id, payload, length);
+}
+
+static uint8_t send_current_input_report(void)
+{
+    portENTER_CRITICAL(&s_remote_mux);
+    uint8_t report_id = s_remote.report_mode;
+    portEXIT_CRITICAL(&s_remote_mux);
+    if (report_id == 0) report_id = REPORT_BUTTONS;
+    return send_data_report(report_id);
 }
 
 static uint8_t send_status(void)
@@ -166,7 +232,8 @@ static uint8_t send_status(void)
     portENTER_CRITICAL(&s_remote_mux);
     payload[0] = s_remote.buttons[0];
     payload[1] = s_remote.buttons[1];
-    payload[2] = s_remote.leds;
+    payload[2] = s_remote.leds |
+                 ((s_remote.ir_logic_enabled && s_remote.ir_sensor_enabled) ? 0x08 : 0x00);
     portEXIT_CRITICAL(&s_remote_mux);
     payload[3] = 0;
     payload[4] = 0;
@@ -233,20 +300,37 @@ static uint8_t read_wiimote_memory(uint8_t space, uint8_t slave, uint16_t addres
                                    uint8_t length, uint8_t *output)
 {
     if (space == MEMORY_SPACE_EEPROM) {
-        if (address == 0x0016 && length == 8) {
-            static const uint8_t calibration[8] = {0x80, 0x80, 0x80, 0x00, 0x9a, 0x9a, 0x9a, 0x00};
-            memcpy(output, calibration, sizeof(calibration));
-            return MEMORY_ERROR_SUCCESS;
-        }
         if (address >= 0x1700 || (uint32_t)address + length > 0x1700)
             return MEMORY_ERROR_INVALID_ADDRESS;
         memset(output, 0, length);
+        if (address < sizeof(s_wiimote_calibration)) {
+            size_t calibration_length = sizeof(s_wiimote_calibration) - address;
+            if (calibration_length > length) calibration_length = length;
+            memcpy(output, s_wiimote_calibration + address, calibration_length);
+        }
         return MEMORY_ERROR_SUCCESS;
     }
     if (space != MEMORY_SPACE_I2C && space != MEMORY_SPACE_I2C_ALT)
         return MEMORY_ERROR_INVALID_SPACE;
     if (slave == EEPROM_I2C_ADDRESS)
         return MEMORY_ERROR_INVALID_ADDRESS;
+    if (slave == I2C_SLAVE_IR_CAMERA) {
+        if ((uint32_t)address + length > sizeof(s_ir_camera_registers))
+            return MEMORY_ERROR_INVALID_ADDRESS;
+
+        portENTER_CRITICAL(&s_ir_camera_mux);
+        memcpy(output, &s_ir_camera_registers[address], length);
+        portEXIT_CRITICAL(&s_ir_camera_mux);
+
+        for (uint8_t i = 0; i < length; ++i) {
+            uint16_t register_address = (uint16_t)(address + i);
+            if (register_address >= IR_CAMERA_FRAME_REGISTER &&
+                register_address < IR_CAMERA_FRAME_REGISTER + IR_CAMERA_FRAME_LENGTH) {
+                output[i] = s_empty_ir_camera_frame[register_address - IR_CAMERA_FRAME_REGISTER];
+            }
+        }
+        return MEMORY_ERROR_SUCCESS;
+    }
     if (slave != I2C_SLAVE_EXTENSION)
         return MEMORY_ERROR_NACK;
 
@@ -336,8 +420,6 @@ static uint8_t handle_memory_write(const uint8_t *payload, uint16_t len)
     uint8_t slave = payload[1] >> 1;
     uint16_t address = (uint16_t)((payload[2] << 8) | payload[3]);
     uint8_t count = payload[4];
-    ESP_LOGI(TAG, "MEM_WRITE space=0x%02x slave=0x%02x address=0x%04x length=%u",
-             space, slave, address, count);
     uint8_t error = MEMORY_ERROR_SUCCESS;
     if (count == 0 || count > 16) {
         error = MEMORY_ERROR_INVALID_ADDRESS;
@@ -348,7 +430,15 @@ static uint8_t handle_memory_write(const uint8_t *payload, uint16_t len)
     } else if (slave == EEPROM_I2C_ADDRESS) {
         error = MEMORY_ERROR_INVALID_ADDRESS;
     } else if (space == MEMORY_SPACE_I2C || space == MEMORY_SPACE_I2C_ALT) {
-        if (slave == I2C_SLAVE_EXTENSION && address == I2C_REG_EXTENSION_ENABLE &&
+        if (slave == I2C_SLAVE_IR_CAMERA) {
+            if ((uint32_t)address + count > sizeof(s_ir_camera_registers)) {
+                error = MEMORY_ERROR_INVALID_ADDRESS;
+            } else {
+                portENTER_CRITICAL(&s_ir_camera_mux);
+                memcpy(&s_ir_camera_registers[address], payload + 5, count);
+                portEXIT_CRITICAL(&s_ir_camera_mux);
+            }
+        } else if (slave == I2C_SLAVE_EXTENSION && address == I2C_REG_EXTENSION_ENABLE &&
             count == 1 && payload[5] == 0x55) {
             error = MEMORY_ERROR_SUCCESS;
         } else if (slave == I2C_SLAVE_EXTENSION && address == I2C_REG_EXTENSION_ENABLE_2 &&
@@ -358,6 +448,8 @@ static uint8_t handle_memory_write(const uint8_t *payload, uint16_t len)
             error = MEMORY_ERROR_NACK;
         }
     }
+    ESP_LOGI(TAG, "MEM_WRITE space=0x%02x slave=0x%02x address=0x%04x length=%u error=0x%02x",
+             space, slave, address, count, error);
     send_memory_write_ack(error);
     return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
 }
@@ -381,11 +473,25 @@ static uint8_t process_output_report(uint8_t report_id, const uint8_t *payload, 
         ESP_LOGI(TAG, "LED state=0x%02x", s_remote.leds);
         return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     case REPORT_IR_ENABLE:
-    case REPORT_IR_ENABLE_2:
+    case REPORT_IR_ENABLE_2: {
+        if (len != 1) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
+        bool enabled = (payload[0] & 0x04) != 0;
+        portENTER_CRITICAL(&s_remote_mux);
+        if (report_id == REPORT_IR_ENABLE) {
+            s_remote.ir_logic_enabled = enabled;
+        } else {
+            s_remote.ir_sensor_enabled = enabled;
+        }
+        bool ir_enabled = s_remote.ir_logic_enabled && s_remote.ir_sensor_enabled;
+        portEXIT_CRITICAL(&s_remote_mux);
+        ESP_LOGI(TAG, "IR feature id=0x%02x enable=%u status_flag=%u (synthetic data)",
+                 report_id, enabled, ir_enabled);
+        return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
+    }
     case REPORT_SPEAKER_ENABLE:
     case REPORT_SPEAKER_MUTE:
         if (len != 1) return ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_PARAM;
-        ESP_LOGI(TAG, "Feature output id=0x%02x enable=%u (sensor/audio hardware absent)",
+        ESP_LOGI(TAG, "Audio feature id=0x%02x enable=%u (audio hardware absent)",
                  report_id, (payload[0] & 0x04) != 0);
         return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     case 0x10:
@@ -401,11 +507,12 @@ static uint8_t process_output_report(uint8_t report_id, const uint8_t *payload, 
         portENTER_CRITICAL(&s_remote_mux);
         s_remote.report_mode = payload[1];
         s_remote.continuous_reporting = (payload[0] & 0x04) != 0;
+        bool supported_mode = is_supported_data_report(s_remote.report_mode);
         bool continuous_reporting = s_remote.continuous_reporting;
         portEXIT_CRITICAL(&s_remote_mux);
-        ESP_LOGI(TAG, "report mode=0x%02x flags=0x%02x (continuous=%d)", payload[1], payload[0],
-                 continuous_reporting);
-        return send_buttons();
+        ESP_LOGI(TAG, "report mode=0x%02x flags=0x%02x (continuous=%d supported=%d)",
+                 payload[1], payload[0], continuous_reporting, supported_mode);
+        return send_current_input_report();
     case REPORT_READ_MEMORY:
         return handle_memory_read(payload, len);
     case REPORT_WRITE_MEMORY:
@@ -520,6 +627,8 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             s_web_control_active = false;
             s_remote.buttons[0] = 0;
             s_remote.buttons[1] = 0;
+            s_remote.ir_logic_enabled = false;
+            s_remote.ir_sensor_enabled = false;
             portEXIT_CRITICAL(&s_remote_mux);
             s_memory_read.active = false;
             if (!s_memory_read_task) {
@@ -531,25 +640,26 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             ESP_ERROR_CHECK(esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE));
             s_remote.connected = true;
             (void) send_status();
-            (void) send_buttons();
+            (void) send_current_input_report();
         }
         break;
     case ESP_HIDD_CLOSE_EVT:
         ESP_LOGI(TAG, "HID close result=%d state=%d", param->close.status, param->close.conn_status);
-        if (param->close.conn_status == ESP_HIDD_CONN_STATE_DISCONNECTED) {
-            portENTER_CRITICAL(&s_remote_mux);
-            s_remote.connected = false;
-            s_remote.buttons[0] = 0;
-            s_remote.buttons[1] = 0;
-            portEXIT_CRITICAL(&s_remote_mux);
-            wiimote_web_set_hid_connected(false);
-            enter_sync_discoverable();
-        }
+        portENTER_CRITICAL(&s_remote_mux);
+        s_remote.connected = false;
+        s_remote.buttons[0] = 0;
+        s_remote.buttons[1] = 0;
+        s_remote.ir_logic_enabled = false;
+        s_remote.ir_sensor_enabled = false;
+        portEXIT_CRITICAL(&s_remote_mux);
+        wiimote_web_set_hid_connected(false);
+        enter_sync_discoverable();
         break;
     case ESP_HIDD_GET_REPORT_EVT:
         ESP_LOGI(TAG, "GET_REPORT id=0x%02x type=%u", param->get_report.report_id, param->get_report.report_type);
-        if (param->get_report.report_type == ESP_HIDD_REPORT_TYPE_INPUT && param->get_report.report_id == REPORT_BUTTONS) {
-            (void) send_buttons();
+        if (param->get_report.report_type == ESP_HIDD_REPORT_TYPE_INPUT &&
+            is_supported_data_report(param->get_report.report_id)) {
+            (void) send_data_report(param->get_report.report_id);
         } else {
             (void) esp_bt_hid_device_report_error(ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_REP_ID);
         }
@@ -600,6 +710,8 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             s_remote.connected = false;
             s_remote.buttons[0] = 0;
             s_remote.buttons[1] = 0;
+            s_remote.ir_logic_enabled = false;
+            s_remote.ir_sensor_enabled = false;
             portEXIT_CRITICAL(&s_remote_mux);
             wiimote_web_set_hid_connected(false);
             enter_sync_discoverable();

@@ -10,7 +10,7 @@ This ESP-IDF project configures the original ESP32 as a Bluetooth Classic HID pe
 - Web-generated core-button reports have been observed at the DolphinBar USB slot with the slot watcher.
 - A cold connection was observed with serial log `WIIREMOTE_HID_CONNECTED peer=...` and DolphinBar slot status.
 
-The DolphinBar transport and button-report path are verified. The user now reports Mario Kart Wii accepts ESPmote A input in Dolphin and continues working after closing/restarting the game. This demonstrates a limited game-level pass for this Dolphin + DolphinBar mode 4 + ESP32 setup; the user also closed/restarted Mario Kart Wii and confirmed it continued working. This is not general compatibility or a Wii/Wii U hardware pass. The exact protocol change responsible is not isolated.
+The DolphinBar transport and button-report path are verified. The user reports Mario Kart Wii accepts ESPmote A input after a game restart on this Dolphin + DolphinBar mode 4 + ESP32 setup. After the trace-driven build below was flashed, the user also reported being able to enter both Mario Kart Wii and Wii Sports. These are narrow, user-reported results; full gameplay, all controls, other games, real Wii hardware, and Wii U are not certified. Wii Sports Resort is future work and is not implemented or tested; its MotionPlus requirements are outside the current scope.
 
 The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. Dolphin's reference behavior is invalid-address error 8; ESPmote returned `00 00 F8 17 70 00 ...` (metadata `0xf8`: size-minus-one 15, error 8). The host then changed report mode and requested status. The trace also shows feature report `0x1A` with ACK requested; firmware now accepts and success-ACKs it. No calibration read at `0x0016` was observed in that trace. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect. Flashing resets the HID link; press SYNC if it no longer reconnects.
 
@@ -18,12 +18,27 @@ The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. D
 
 The Wi-Fi page provides core buttons A, B, 1, 2, D-pad, Plus, Minus and Home, plus A+B and 1+2 combinations. It sends held-button state and clears bits on release. SSID/password are local `sdkconfig` values configured through `idf.py menuconfig`; `sdkconfig` is ignored and must never be committed.
 
+### Wii Sports trace: requests, prior replies, and corrections
+
+The 29 October capture shows Wii Sports enabling IR and requesting several initialization reads/writes. The button path itself was already verified with the button checker; the game-specific initialization replies were incomplete.
+
+| Observed request | Previous reply | Correction |
+|---|---|---|
+| Report mode `0x33` (buttons, accelerometer, IR) | The old sender always emitted a 2-byte `0x30` report. | Return the requested 17-byte `0x33` payload: buttons, stationary placeholder accelerometer, and four empty IR points. Keep mode-`0x30` button press/release event-driven. |
+| EEPROM read `0x0000`, 42 bytes | Forty-two zero bytes, invalidating the IR and accelerometer calibration checksums. | Return duplicated synthetic IR/accelerometer calibration blocks with valid checksums at `0x0000`/`0x000B` and `0x0016`/`0x0020`. |
+| EEPROM reads `0x002A` and `0x0062` | Zero-filled user-data ranges. | Keep these zero-filled; WiiBrew documents these ranges as zero-initialized user data. |
+| EEPROM read `0x1770`, 1 byte | Error 8 (invalid address). | Keep unchanged; `0x1770` is outside the accessible EEPROM range. |
+| I2C writes to slave `0x58` | NACK/error 7 for every IR register write. | Store writes in a synthetic IR register bank, ACK valid writes, and return a 16-byte empty-point frame at register `0x36`. |
+| IR enable reports `0x13` and `0x1A`, followed by status | Feature reports were ACKed, but status omitted the IR-enabled flag. | Track both enable stages and set the status report's IR flag when both are enabled. |
+
+This remains a synthetic sensor implementation: IR points are empty and accelerometer values are stationary placeholders. The extra 20 ms background-report task from the first attempt was removed; mode `0x30` sends on button changes as in the previously working Mario Kart build. The user reports entry into Mario Kart Wii and Wii Sports with this flashed build, but full gameplay and sensor-driven controls remain unverified. The report watcher decodes button bits from reports `0x30`-`0x33`.
+
 The firmware does **not** yet provide:
 
 - Physical GPIO/button input.
 - A real Nunchuk, Classic Controller or other extension; no analog stick is available.
-- Live accelerometer/motion data, IR camera/pointing, speaker output or rumble motor output.
-- Full EEPROM/calibration and extension-I2C register behavior. Current memory handling provides a synthetic calibration block, accepts extension disable/reset writes, and returns NACK/no-extension responses; it is not a complete EEPROM/I2C device model. The latest implementation has not yet been validated with Dolphin/Mario Kart Wii after the update. Memory reads are queued to a dedicated task and paced in 10 ms intervals between 16-byte reports.
+- Live accelerometer/motion data, IR HID pointing, speaker output or rumble motor output. The current report scaffolding is synthetic only.
+- Full EEPROM/calibration and extension-I2C register behavior. The firmware now returns a synthetic valid calibration map and emulates only the IR register behavior seen in the trace; it is not a complete EEPROM/I2C device model. Memory reads are queued to a dedicated task and paced in 10 ms intervals between 16-byte reports.
 - Verified Dolphin/game compatibility, Wii/Wii U native/vWii compatibility, reconnect-after-reset or soak-test results.
 
 Some games require extension or motion data and will not work with this implementation. The current FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional Wiimote initialization/report handling beyond pairing and a button report.
