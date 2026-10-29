@@ -9,7 +9,7 @@ import time
 VID = 0x057E
 PID = 0x0306
 STATUS_REQUEST = b"\x15\x00"
-BUTTON_REPORT_ID = 0x30
+BUTTON_REPORT_IDS = {0x30, 0x31, 0x32, 0x33}
 # Report 0x30 carries the 16-bit core-button mask big-endian: byte 1 is high,
 # byte 2 is low.
 BUTTON_NAMES = {
@@ -89,7 +89,9 @@ def main() -> None:
         deadline = time.monotonic() + max(1.0, args.seconds)
         seen = 0
         last_buttons = None
-        print(f"Watching report 0x30 for up to {args.seconds:g}s on {slot}; no pairing or button commands sent.", flush=True)
+        last_report_id = None
+        print(f"Watching button reports 0x30-0x33 for up to {args.seconds:g}s on {slot}; "
+              "no pairing or button commands sent.", flush=True)
         while time.monotonic() < deadline:
             ready, _, _ = select.select([fd], [], [], min(0.25, deadline - time.monotonic()))
             if not ready:
@@ -104,12 +106,14 @@ def main() -> None:
             if not report:
                 continue
             seen += 1
-            if report[0] == BUTTON_REPORT_ID and len(report) >= 3:
+            if report[0] in BUTTON_REPORT_IDS and len(report) >= 3:
                 buttons = (report[1] << 8) | report[2]
-                if buttons != last_buttons:
+                if buttons != last_buttons or report[0] != last_report_id:
                     labels = [name for bit, name in BUTTON_NAMES.items() if buttons & bit]
-                    print(f"Buttons: 0x{buttons:04x} {labels if labels else '[none]'}", flush=True)
+                    print(f"Buttons (report 0x{report[0]:02x}): 0x{buttons:04x} "
+                          f"{labels if labels else '[none]'}", flush=True)
                     last_buttons = buttons
+                    last_report_id = report[0]
             elif seen <= 3:
                 print(f"Other input report {report[0]:02x}: {report.hex(' ')}", flush=True)
     finally:

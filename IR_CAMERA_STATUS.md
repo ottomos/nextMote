@@ -1,6 +1,6 @@
 # IR camera integration status
 
-Updated 29 October 2026 on the `motion-addon` branch, based on `wifi-web-buttons`.
+Updated 29 October 2026 on `motion-addon`, merged with `main` commit `0811927`.
 
 ## Implemented
 
@@ -8,7 +8,14 @@ Updated 29 October 2026 on the `motion-addon` branch, based on `wifi-web-buttons
 - Startup probes I2C address `0x58`, sends the camera initialization sequence, and reads four raw X/Y points from each 16-byte frame.
 - The default ESP32-WROOM bus is GPIO21 SDA / GPIO22 SCL at 100 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled.
 - The existing virtual-button page now includes a live point plot and coordinate table. `GET /api/camera` returns `detected`, `available`, and four `{x,y}` values; the page refreshes these values every 120 ms.
-- Camera startup/read failures are logged and do not stop the Bluetooth HID or web controller from starting.
+- Camera startup is optional. If no device responds at `0x58`, initialization logs a warning, releases the I2C resources, publishes `detected:false`, and continues Bluetooth/Wi-Fi/web startup without creating the camera polling task.
+- Read failures are logged and do not stop the Bluetooth HID or web controller.
+
+## Hardware check
+
+On 29 October, the user connected the SEN0158 with VCC at 3.3 V, yellow SDA mapped to GPIO21, and green SCL mapped to GPIO22. The live `/api/camera` response reported `detected:true`, `available:true`, and four non-empty points (sample: P0 `(653,298)`, P1 `(623,302)`, P2 `(644,352)`, P3 `(213,318)`). This verifies camera detection and frame decoding on this board.
+
+The copied assembly guide documents the 5 V camera wiring through the bidirectional level shifter. Do not use 5 V camera power with SDA/SCL connected directly to ESP32 GPIO; use the shifter for that configuration.
 
 The point coordinates are passed through as raw values from 0 to 1023. A coordinate of 1023 means that point is empty. `available` means the latest full frame read succeeded; it does not mean that all four points contain a detected source.
 
@@ -16,11 +23,12 @@ The native driver implements the sensor protocol and bit layout documented by DF
 
 ## Not implemented or not verified
 
-- The current native driver has only been build-verified with ESP-IDF v6.0.1. It has not been flashed or tested against the camera on the current board.
+- Continuous operation, reconnect recovery after camera removal, 5 V plus level-shifter wiring, and combined camera/MPU operation have not been tested.
 - The user reports that the camera and motion sensor worked separately in the legacy setup, but they were not tested together. The legacy assembly guide identifies the motion board as a GY-BNO08X; no BNO/MPU code is included in this branch.
 - This branch displays camera points for diagnostics only. It does not encode the points into Wii Remote IR HID reports or move a game pointer.
 - No calibration, filtering, smoothing, point association, or higher-level tracking is implemented.
 - The camera module currently owns I2C port 0 on GPIO21/22. If another I2C sensor is added later, it must share this bus instead of trying to initialize a second master on the same pins; combined sensor operation remains untested.
+- The merged Wii Remote report path still uses synthetic stationary accelerometer values and empty IR points; camera measurements are not yet wired into those reports.
 
 ## Camera-only wiring
 
@@ -51,4 +59,4 @@ idf.py build
 
 After a future hardware test, open the ESPmote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons. The endpoint can also be inspected directly at `/api/camera`.
 
-The build succeeded for this branch. No firmware was flashed as part of this change, so the wiring and live camera view still require hardware validation.
+The merged firmware has been built and flashed. Camera acquisition was verified at 3.3 V; the guide's 5 V/level-shifter assembly and longer-term camera operation still require validation.
