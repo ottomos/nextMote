@@ -1,6 +1,6 @@
 # IR camera integration status
 
-Updated 29 October 2026 on `motion-addon`, merged with `main` commit `0811927`.
+Updated 29 October 2026 on local `main` at `af8282a`.
 
 ## Implemented
 
@@ -17,7 +17,18 @@ On 29 October, the user connected the SEN0158 with VCC at 3.3 V, yellow SDA mapp
 
 An experimental High sensitivity profile was checked in the legacy firmware: remote-control IR produced transient points, while the DolphinBar produced none in a 10-second sample. A subsequent ESP-IDF build with High sensitivity was reported to run Wii Sports with two visible points; `/api/camera` returned `(729,509)` and `(294,488)`. The current modular ESP-IDF firmware has been flashed with the DFRobot default profile, so game and point behavior should be retested after reconnecting.
 
+On the current modular firmware with the DFRobot default sensitivity profile, the user repeatedly reports that after an ESP32 power cycle all points show `1023` until DolphinBar SYNC is pressed, after which locations register. The camera service initializes during app startup and polls every 50 ms; the HID-open/SYNC path does not start or reinitialize it. A read-only sample after one report showed `connected:true`, `detected:true`, `available:true`, but all points were empty at that instant, so samples need to be captured during the transition. The cause is not established.
+
 The user later reported that removing camera power changed the page to “Camera not detected,” and restoring power returned camera detection. A frame showing `1023` for all points means no IR points were found; it does not mean the camera is disconnected.
+
+## SYNC-dependent point detection: diagnostic path
+
+Use this sequence before changing sensitivity, wiring, or firmware:
+
+1. After an ESP32 power cycle and before pressing SYNC, check `GET /api/status` and `GET /api/camera`. If `wifi:true` and `detected:true, available:true`, the webserver and I2C frame reads are running. Four `(1023,1023)` values mean no IR blobs were reported in that frame; they do not prove camera failure. If `detected:false`, capture the boot log and resolve the camera probe/initialization error first.
+2. Before SYNC, point a TV remote directly at the camera and hold a button while watching `/api/camera`. If coordinates appear, the camera and polling path work before SYNC; investigate whether the DolphinBar's IR source is active/visible before sync, its mode, power, aim, and distance.
+3. If the remote also produces no points before SYNC but points appear after SYNC, capture a serial log from boot through the SYNC event. The expected camera initialization log occurs at startup, before HID open. Add temporary, rate-limited logging of raw 16-byte camera frames before and after SYNC to determine whether frame data changes or only point decoding/display changes.
+4. Compare the same camera position and IR source before/after SYNC. A phone camera can show that an emitter is on, but does not prove its intensity, wavelength, or what reaches the SEN0158. Do not raise sensitivity or rewire until the before/after frame comparison identifies which side changes.
 
 The copied assembly guide documents the 5 V camera wiring through the bidirectional level shifter. Do not use 5 V camera power with SDA/SCL connected directly to ESP32 GPIO; use the shifter for that configuration.
 
