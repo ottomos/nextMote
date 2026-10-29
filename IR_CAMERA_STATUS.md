@@ -1,6 +1,6 @@
 # IR camera integration status
 
-Updated 29 October 2026 on local `main` at `af8282a`.
+Updated 29 October 2026 on `wiimote-ir-pointer`, based on local `main` at `10f771e`.
 
 ## Implemented
 
@@ -8,6 +8,7 @@ Updated 29 October 2026 on local `main` at `af8282a`.
 - Startup probes I2C address `0x58`, uses the DFRobot default initialization profile (`0x06=0x90`, `0x08=0xC0`, `0x1A=0x40`), and reads four raw X/Y points from each 16-byte frame.
 - The default ESP32-WROOM bus is GPIO21 SDA / GPIO22 SCL at 100 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled.
 - The existing virtual-button page now includes a live point plot and coordinate table. `GET /api/camera` returns `detected`, `available`, and four `{x,y}` values; the page refreshes these values every 120 ms.
+- On `wiimote-ir-pointer`, the camera's four raw 3-byte point records are copied into the 12 IR bytes of HID report `0x33` when the host has selected that report and enabled both IR stages. Camera changes are sent as they arrive; continuous reporting follows the host's request.
 - Camera startup is optional. If no device responds at `0x58`, initialization logs a warning, releases the I2C resources, publishes `detected:false`, and continues Bluetooth/Wi-Fi/web startup without creating the camera polling task.
 - Read failures are logged and do not stop the Bluetooth HID or web controller.
 
@@ -18,6 +19,8 @@ On 29 October, the user connected the SEN0158 with VCC at 3.3 V, yellow SDA mapp
 An experimental High sensitivity profile was checked in the legacy firmware: remote-control IR produced transient points, while the DolphinBar produced none in a 10-second sample. A subsequent ESP-IDF build with High sensitivity was reported to run Wii Sports with two visible points; `/api/camera` returned `(729,509)` and `(294,488)`. The current modular ESP-IDF firmware has been flashed with the DFRobot default profile, so game and point behavior should be retested after reconnecting.
 
 On the current modular firmware with the DFRobot default sensitivity profile, the user repeatedly reports that after an ESP32 power cycle all points show `1023` until DolphinBar SYNC is pressed, after which locations register. The camera service initializes during app startup and polls every 50 ms; the HID-open/SYNC path does not start or reinitialize it. A read-only sample after one report showed `connected:true`, `detected:true`, `available:true`, but all points were empty at that instant, so samples need to be captured during the transition. The cause is not established.
+
+Immediately after flashing the pointer branch, `/api/camera` first reported `detected:false` and `available:false`. The user reset the ESP32 and camera detection returned; a later sample reported two points `(416,468)` and `(162,427)` with HID connected. The user then confirmed the Wii Sports pointer appeared and tracked camera movement. This verifies basic pointer operation in that setup. The initial probe failure/reset relationship is still unexplained.
 
 The user later reported that removing camera power changed the page to “Camera not detected,” and restoring power returned camera detection. A frame showing `1023` for all points means no IR points were found; it does not mean the camera is disconnected.
 
@@ -40,10 +43,10 @@ The native driver implements the sensor protocol and bit layout documented by DF
 
 - Repeated/long-term operation, camera connection when it is absent at ESP32 startup, 5 V plus level-shifter wiring, and combined camera/MPU operation have not been tested. Power cycling the camera after successful initialization was reported to clear and restore detection.
 - The user reports that the camera and motion sensor worked separately in the legacy setup, but they were not tested together. The legacy assembly guide identifies the motion board as a GY-BNO08X; no BNO/MPU code is included in this branch.
-- This branch displays camera points for diagnostics only. It does not encode the points into Wii Remote IR HID reports or move a game pointer.
+- Raw camera points are sent in HID report `0x33` on the pointer branch. After the mirrored-axis build was flashed, the user confirmed that both pointer and buttons work in Wii Sports and Mario Kart, with pointer directions corrected. The pointer remains twitchy; smoothing, other games, and long-duration behavior remain unverified. A later API sample showed `available:true` but all points empty, so coordinate reporting may be intermittent.
 - No calibration, filtering, smoothing, point association, or higher-level tracking is implemented.
 - The camera module currently owns I2C port 0 on GPIO21/22. If another I2C sensor is added later, it must share this bus instead of trying to initialize a second master on the same pins; combined sensor operation remains untested.
-- The merged Wii Remote report path still uses synthetic stationary accelerometer values and empty IR points; camera measurements are not yet wired into those reports.
+- Accelerometer values remain stationary placeholders. No camera coordinate transform, smoothing, calibration, or point association is implemented.
 
 ## Camera-only wiring
 

@@ -18,7 +18,7 @@ The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. D
 
 The Wi-Fi page provides core buttons A, B, 1, 2, D-pad, Plus, Minus and Home, plus A+B and 1+2 combinations. It sends held-button state and clears bits on release. SSID/password are local `sdkconfig` values configured through `idf.py menuconfig`; `sdkconfig` is ignored and must never be committed.
 
-On the `motion-addon` branch, the same page also shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. With the camera powered from 3.3 V and SDA/SCL mapped to GPIO21/22, `/api/camera` returned a valid frame with four points. Without a camera, initialization logs a warning, firmware continues, and the endpoint reports `detected:false`. This preview is diagnostic only and does not send camera points through HID; camera/MPU combination is untested. See [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) and [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html). For the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
+The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, the user confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
 
 ### Wii Sports trace: requests, previous replies, and current behavior
 
@@ -26,20 +26,20 @@ The 29 October capture showed Wii Sports selecting report `0x33` and initializin
 
 | Observed request | Previous reply | Current behavior |
 |---|---|---|
-| Report mode `0x33` (buttons, accelerometer, IR) | Fixed 2-byte `0x30` button report | Return the requested 17-byte `0x33` payload: buttons, placeholder acceleration, and four empty IR points. Keep mode-`0x30` button changes event-driven. |
+| Report mode `0x33` (buttons, accelerometer, IR) | Fixed 2-byte `0x30` button report | Return the requested 17-byte payload. On `wiimote-ir-pointer`, populate its 12 IR bytes from the SEN0158 raw points when the camera frame is valid and IR is enabled; otherwise send empty points. Keep mode-`0x30` button changes event-driven. |
 | EEPROM read `0x0000`, 42 bytes | Forty-two zero bytes, invalidating calibration checksums | Return duplicate synthetic IR and accelerometer calibration blocks with valid checksums. |
 | EEPROM reads `0x002A` and `0x0062` | Zero-filled user-data ranges | Continue returning zero-filled data for these ranges. |
 | EEPROM read `0x1770`, 1 byte | Error 8 | Keep error 8; the address is outside accessible EEPROM. |
 | I2C writes to slave `0x58` and frame read at `0x36` | NACK/error 7 for writes; no frame | Store valid writes in a synthetic register bank, acknowledge them, and return a 16-byte empty-point frame. |
 | IR enable reports `0x13` and `0x1A`, followed by status | Enable ACKs but IR status flag clear | Track both enable stages and set the status flag when both are enabled. |
 
-The user reports being able to enter Mario Kart Wii and Wii Sports with this flashed build. This is setup-specific, user-reported evidence, not complete gameplay or sensor validation. The synthetic accelerometer is stationary and IR points are empty; the camera preview is not connected to the HID report data. The report watcher decodes buttons from reports `0x30`-`0x33`. Wii Sports Resort remains future work; MotionPlus support is not implemented.
+The user reports being able to enter Mario Kart Wii and Wii Sports with the prior flashed build. On `wiimote-ir-pointer`, the user confirmed that pointer and buttons work in both Wii Sports and Mario Kart after the mirrored-axis build was flashed. Pointer movement remains twitchy. These are setup-specific results, not complete gameplay or general compatibility validation. The synthetic accelerometer remains stationary. The report watcher decodes buttons from reports `0x30`-`0x33`. Wii Sports Resort remains future work; MotionPlus support is not implemented.
 
 The firmware does **not** yet provide:
 
 - Physical GPIO/button input.
 - A real Nunchuk, Classic Controller or other extension; no analog stick is available.
-- Live accelerometer/motion data, IR HID pointing, speaker output, and rumble. The current report scaffolding is synthetic only.
+- Live accelerometer/motion data, smoothed pointer behavior across games, speaker output, and rumble. Mirrored-axis pointer and button operation is confirmed in Wii Sports and Mario Kart only.
 - Complete EEPROM/calibration and extension-I2C register behavior. The firmware returns a valid synthetic calibration map and emulates only the IR register behavior seen in the trace; it is not a full EEPROM/I2C device model. Memory reads are queued and paced in 10 ms intervals between 16-byte reports.
 - Full game-control coverage beyond the user-reported Mario Kart Wii and Wii Sports entry tests, real Wii/Wii U compatibility, persistent reconnects, and soak tests remain unverified.
 

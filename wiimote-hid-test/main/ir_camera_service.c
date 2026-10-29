@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ir_camera.h"
+#include "wiimote_reports.h"
 #include "wiimote_web.h"
 
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
@@ -27,6 +28,7 @@ static void ir_camera_task(void *arg)
             ESP_LOGI(TAG, "IR camera frame reads recovered");
         }
         last_error = err;
+        wiimote_reports_set_camera_state(&state);
         wiimote_web_set_camera_state(&state);
         vTaskDelay(pdMS_TO_TICKS(IR_CAMERA_POLL_MS));
     }
@@ -40,6 +42,7 @@ void ir_camera_service_start(void)
     esp_err_t camera_err = ir_camera_init();
     if (camera_err == ESP_OK) {
         camera_state.detected = true;
+        wiimote_reports_set_camera_state(&camera_state);
         wiimote_web_set_camera_state(&camera_state);
         BaseType_t task_result = xTaskCreate(ir_camera_task, "ir_camera", 3072,
                                              NULL, 5, NULL);
@@ -49,6 +52,7 @@ void ir_camera_service_start(void)
     } else {
         ESP_LOGW(TAG, "IR camera initialization at 0x58 failed: %s; continuing without camera",
                  esp_err_to_name(camera_err));
+        wiimote_reports_set_camera_state(&camera_state);
         wiimote_web_set_camera_state(&camera_state);
     }
 #endif

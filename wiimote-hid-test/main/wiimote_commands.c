@@ -29,6 +29,12 @@ uint8_t wiimote_commands_process_output_report(uint8_t report_id,
         wiimote_state_set_ir_feature(report_id, enabled);
         ESP_LOGI(TAG, "IR feature id=0x%02x enable=%u status_flag=%u (synthetic data)",
                  report_id, enabled, wiimote_state_ir_enabled());
+        wiimote_state_snapshot_t state;
+        wiimote_state_get_snapshot(&state);
+        if (state.report_mode == WIIMOTE_REPORT_BUTTONS_ACCEL_IR &&
+            state.ir_logic_enabled && state.ir_sensor_enabled) {
+            (void)wiimote_reports_send_current();
+        }
         return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
     }
     case WIIMOTE_REPORT_SPEAKER_ENABLE:

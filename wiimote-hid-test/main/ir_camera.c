@@ -60,6 +60,7 @@ static void clear_points(ir_camera_state_t *state)
         state->x[i] = IR_CAMERA_NO_POINT;
         state->y[i] = IR_CAMERA_NO_POINT;
     }
+    memset(state->ir_report_data, 0xff, sizeof(state->ir_report_data));
 }
 
 static esp_err_t write_register(uint8_t reg, uint8_t value)
@@ -148,6 +149,7 @@ esp_err_t ir_camera_read(ir_camera_state_t *state)
         return err;
     }
 
+    memcpy(state->ir_report_data, frame + 1, sizeof(state->ir_report_data));
     for (size_t i = 0; i < IR_CAMERA_POINT_COUNT; ++i) {
         const size_t offset = 1 + i * 3;
         const uint8_t high = frame[offset + 2];
