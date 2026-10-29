@@ -57,6 +57,13 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device mode, set the advertised name to `Nintendo RVL-CNT-01`, enable limited discoverability to match the remote's SYNC-mode inquiry behavior, and increase the SDP attribute/padding buffers to publish the descriptor. The limited discoverability option can be changed in `idf.py menuconfig` under **HID Example Configuration**.
 
+### Quick iteration
+
+- Work from `firmware/wiimote-hid-test` in the ESPmote repository, not the separate legacy `espWiimote` Arduino project.
+- For normal source edits, use incremental `idf.py build`; reserve `idf.py fullclean` for stale build/configuration problems.
+- On the tested ESP32, flash at 115200 baud: `idf.py -p /dev/ttyUSB0 -b 115200 flash`. If esptool reports that the stub failed to start, no image was written; resync with `python -m esptool --chip esp32 -p /dev/ttyUSB0 -b 57600 --no-stub read-mac`, then retry the flash.
+- A flash resets the HID connection; press DolphinBar SYNC again. Verify `/api/status` and `/api/camera` at the IP printed by the firmware. The current camera initialization uses the DFRobot default sensitivity profile.
+
 ## Pairing and logs
 
 Set the DolphinBar to mode 4 and press SYNC while the ESP32 is powered and advertising. Expected serial evidence includes:
@@ -85,7 +92,14 @@ This is protocol-reference attribution, not a claim of code reuse. Any future co
 
 ## Implementation notes
 
-- `main/wiimote_test.c` contains Classic Bluetooth setup, pairing, HID callbacks, and the partial memory/initialization handlers.
+- `main/wiimote_app.c` contains Classic Bluetooth setup, pairing, GAP/HID event callbacks, and app startup.
+- `main/wiimote_state.c` owns synchronized connection, button, LED, IR, and report-mode state.
+- `main/wiimote_protocol.c` defines supported report IDs and common protocol checks.
+- `main/wiimote_reports.c` encodes and sends input, status, acknowledgement, and memory replies.
+- `main/wiimote_commands.c` dispatches host output reports to their capability handlers.
+- `main/wiimote_memory.c` emulates EEPROM/I2C reads and writes for initialization.
+- `main/wiimote_controls.c` handles web button input and the optional fake-button demo.
+- `main/ir_camera_service.c` initializes and polls the SEN0158 camera for the web preview.
 - `main/wiimote_descriptor.c` contains the HID report descriptor.
 - `main/wiimote_identity.c` contains Bluetooth address formatting.
 - Pairing PIN handling is currently tuned for the tested DolphinBar SYNC flow. Treat 1+2 pairing and console interoperability as unverified.

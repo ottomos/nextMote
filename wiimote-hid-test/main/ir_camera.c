@@ -25,6 +25,7 @@ static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_device;
 static bool s_initialized;
 
+/* Keep the DFRobot SEN0158 library's stock initialization profile. */
 static const uint8_t s_init_registers[][2] = {
     {0x30, 0x01},
     {0x30, 0x08},
@@ -114,6 +115,7 @@ esp_err_t ir_camera_init(void)
 
     vTaskDelay(pdMS_TO_TICKS(100));
     s_initialized = true;
+    ESP_LOGI(TAG, "SEN0158 initialized with DFRobot default profile");
     return ESP_OK;
 }
 
