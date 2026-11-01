@@ -67,7 +67,7 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device mode, set the advertised name to `Nintendo RVL-CNT-01`, and increase the SDP attribute/padding buffers to publish the descriptor. For the standard Wi-Fi pairing button, espMote starts general/GIAC discovery for 20 seconds. The `/api/sync/limited` endpoint is diagnostic only.
+The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device mode, set the advertised name to `Nintendo RVL-CNT-01`, and increase the SDP attribute/padding buffers to publish the descriptor. The standard web SYNC endpoint opens a 30-second Limited window with CoD `0x002504`. `/api/sync/limited` is an alias of the standard path; `/api/sync/general` is the GIAC-only diagnostic.
 
 ### Quick iteration
 
