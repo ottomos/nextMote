@@ -16,22 +16,43 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "imu_service.h"
+#if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
+#include "esp_bt_main.h"
+#include "esp_gap_bt_api.h"
+#include "wiimote_bond_json.h"
+#include "wiimote_bt_trace.h"
+#endif
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_RETRY_LIMIT 10
 #define MAX_HTTP_BODY 96
+#if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
+#define PAIRING_PROFILE "upstream-general-continuous"
+#define SYNC_BUTTON_LABEL "SYNC - upstream General baseline"
+#define PAIRING_EXPLANATION "Upstream discovery baseline: espMote is General discoverable while idle. " \
+                            "There is no timed deadline in this diagnostic profile. " \
+                            "The normal timed profile remains available in a baseline-disabled build."
+#else
+#define PAIRING_PROFILE "timed"
+#define SYNC_BUTTON_LABEL "SYNC · 30 seconds"
+#define PAIRING_EXPLANATION "Press SYNC on the console first. When it asks for a remote, press this button; " \
+                            "espMote will be discoverable for 30 seconds."
+#endif
 
 static const char *TAG = "wiimote_web";
 static EventGroupHandle_t s_wifi_events;
 static SemaphoreHandle_t s_button_lock;
 static uint16_t s_button_mask;
 static portMUX_TYPE s_camera_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_sync_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static ir_camera_state_t s_camera_state;
 static wiimote_web_button_callback_t s_button_callback;
+static wiimote_web_sync_callback_t s_sync_callback;
 static esp_netif_t *s_station;
 static httpd_handle_t s_http_server;
 static unsigned s_retry_count;
 static bool s_hid_connected;
+static bool s_sync_window_active;
 
 static const struct {
     const char *name;
@@ -69,6 +90,10 @@ static const char INDEX_HTML[] =
     "height:50px;background:#66728a}.sys.one{grid-column:1}.sys.two{grid-column:3}"
     ".sys.home{grid-column:2;background:#d09b43}.combo-row{grid-column:1/4;grid-row:7;"
     "display:grid;grid-template-columns:1fr 1fr;gap:10px}.combo{height:48px;background:#506a88}"
+    ".pairing-panel{margin:18px auto;padding:18px;background:#161e2d;border:1px solid #35415a;"
+    "border-radius:22px;text-align:center}.pairing-panel h2{margin:0}.pairing-panel p{"
+    "color:#aab7cf;line-height:1.5}.sync-button{width:min(360px,100%);height:56px;"
+    "background:#c74455}.sync-button:disabled{opacity:.55;cursor:not-allowed}"
     "@media(max-width:460px){.remote{padding:18px;gap:8px;grid-template-rows:repeat(7,56px)}"
     ".ab button{width:62px;"
     "height:62px}.ab button:first-child{width:76px;height:76px}}"
@@ -96,6 +121,13 @@ static const char INDEX_HTML[] =
     "transition:transform 90ms linear}"
     "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
     "<div id='status'>Connecting to ESP32…</div><div id='button-status' aria-live='polite'></div>"
+    "<section class='pairing-panel' aria-label='Bluetooth pairing'>"
+    "<h2>Pair with Wii / Wii U</h2>"
+    "<p>" PAIRING_EXPLANATION " "
+    "The 1 + 2 control below is for gameplay, not pairing.</p>"
+    "<button id='sync-button' type='button' class='sync-button'>" SYNC_BUTTON_LABEL "</button>"
+    "<p id='sync-status' aria-live='polite'>Bluetooth pairing is off. Press SYNC to open a pairing window.</p>"
+    "</section>"
     "<section class='remote' aria-label='Wii Remote'>"
     "<div class='dpad'><button class='up' data-button='Up'>▲</button>"
     "<button class='left' data-button='Left'>◀</button><button class='right' data-button='Right'>▶</button>"
@@ -124,6 +156,8 @@ static const char INDEX_HTML[] =
     "</div><div class='imu-cube-wrap'><div id='imu-cube' aria-label='IMU orientation box'></div>"
     "</div></div></section></main><script>"
     "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
+    "const syncButton=document.querySelector('#sync-button');const syncStatusEl=document.querySelector('#sync-status');"
+    "let syncRequestPending=false,syncCountdownTimer=null,syncRequestError=false;"
     "let held=new Set(),queue=Promise.resolve();"
     "const cameraStatusEl=document.querySelector('#camera-status');"
     "const cameraTracker=document.querySelector('#camera-tracker');const cameraDots=[];"
@@ -145,9 +179,38 @@ static const char INDEX_HTML[] =
     "b.addEventListener('contextmenu',e=>e.preventDefault())});"
     "window.addEventListener('blur',()=>{for(const b of document.querySelectorAll('.pressed'))release(b)});"
     "document.addEventListener('visibilitychange',()=>{if(document.hidden){for(const b of document.querySelectorAll('.pressed'))release(b)}});"
+    "async function requestSync(){if(syncRequestPending||statusEl.dataset.connected==='1')return;"
+    "syncRequestPending=true;syncRequestError=false;syncButton.disabled=true;"
+    "try{const r=await fetch('/api/sync',{method:'POST'});"
+    "if(!r.ok)throw Error(await r.text());const d=await r.json();"
+    "if(d.pairing_profile==='upstream-general-continuous'){"
+    "if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
+    "syncStatusEl.textContent='Upstream General baseline active - continuous while idle';return;}"
+    "const expires=Date.now()+d.window_seconds*1000;"
+    "if(syncCountdownTimer)clearInterval(syncCountdownTimer);"
+    "const refreshSync=()=>{const left=Math.max(0,Math.ceil((expires-Date.now())/1000));"
+    "syncStatusEl.textContent=left?'ESPmote SYNC active · '+left+' s remaining':"
+    "'SYNC window expired · press again to retry';"
+    "if(!left){clearInterval(syncCountdownTimer);syncCountdownTimer=null}};"
+    "refreshSync();syncCountdownTimer=setInterval(refreshSync,250)}"
+    "catch(e){syncRequestError=true;syncStatusEl.textContent='SYNC failed: '+e.message}"
+    "finally{syncRequestPending=false;syncButton.disabled=statusEl.dataset.connected==='1'}}"
+    "syncButton.addEventListener('click',requestSync);"
     "function updateStatus(s){statusEl.textContent=s.wifi?"
-    "'Wi-Fi connected · '+s.ip+(s.connected?' · HID connected':' · waiting for DolphinBar'):"
+    "'Wi-Fi connected · '+s.ip+(s.connected?' · HID connected':' · Bluetooth ready for SYNC'):"
     "'Wi-Fi not connected yet';statusEl.dataset.connected=s.connected?'1':'0';"
+    "syncButton.disabled=s.connected||syncRequestPending;"
+    "if(s.connected){if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
+    "syncStatusEl.textContent='Bluetooth HID connected'}"
+    "else if(s.pairing_profile==='upstream-general-continuous'&&s.sync_window){"
+    "if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
+    "syncStatusEl.textContent='Upstream General baseline active - continuous while idle'}"
+    "else if(s.sync_window&&!syncCountdownTimer)syncStatusEl.textContent="
+    "'ESPmote SYNC pairing window is active';"
+    "else if(!s.sync_window&&syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null;"
+    "syncStatusEl.textContent='SYNC pairing window closed'}"
+    "else if(!s.sync_window&&!syncCountdownTimer&&!syncRequestError)syncStatusEl.textContent="
+    "'Bluetooth pairing is off. Press SYNC to open a pairing window.';"
     "if(!s.connected)for(const b of document.querySelectorAll('.pressed'))release(b)}"
     "async function refreshStatus(){try{const r=await fetch('/api/status',{cache:'no-store'});"
     "if(!r.ok)throw Error('HTTP '+r.status);updateStatus(await r.json())}"
@@ -206,6 +269,14 @@ static bool hid_connected_snapshot(void)
     return connected;
 }
 
+static bool sync_window_snapshot(void)
+{
+    portENTER_CRITICAL(&s_sync_status_mux);
+    bool active = s_sync_window_active;
+    portEXIT_CRITICAL(&s_sync_status_mux);
+    return active;
+}
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     char ip[16] = "0.0.0.0";
@@ -213,11 +284,19 @@ static esp_err_t status_handler(httpd_req_t *req)
     if (s_station && esp_netif_get_ip_info(s_station, &info) == ESP_OK) {
         snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
     }
-    char response[128];
+    char response[256];
     bool hid_connected = hid_connected_snapshot();
-    snprintf(response, sizeof(response), "{\"wifi\":%s,\"connected\":%s,\"ip\":\"%s\"}",
+    bool sync_window_active = sync_window_snapshot();
+    int length = snprintf(response, sizeof(response),
+             "{\"wifi\":%s,\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\"}",
              (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) ? "true" : "false",
-             hid_connected ? "true" : "false", ip);
+             hid_connected ? "true" : "false",
+             sync_window_active ? "true" : "false", ip, PAIRING_PROFILE);
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        ESP_LOGE(TAG, "Status response formatting failed");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Status response formatting failed");
+    }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
@@ -319,7 +398,7 @@ static esp_err_t button_handler(httpd_req_t *req)
     xSemaphoreTake(s_button_lock, portMAX_DELAY);
     if (!s_hid_connected) {
         xSemaphoreGive(s_button_lock);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "DolphinBar HID is not connected");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Bluetooth HID is not connected");
         return ESP_FAIL;
     }
     bool pressed = pressed_text[0] == '1';
@@ -333,6 +412,147 @@ static esp_err_t button_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
+
+static esp_err_t sync_handler(httpd_req_t *req, bool general_discoverable)
+{
+#if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
+    general_discoverable = true;
+#endif
+    if (req->content_len != 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SYNC request must not have a body");
+        return ESP_FAIL;
+    }
+    if (hid_connected_snapshot()) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Bluetooth HID is already connected");
+    }
+    if (!s_sync_callback) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Bluetooth SYNC callback is unavailable");
+    }
+
+    esp_err_t err = s_sync_callback(general_discoverable);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_STATE) {
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req, "Bluetooth is connected or not ready for pairing");
+        }
+        ESP_LOGE(TAG, "Failed to open Bluetooth SYNC window: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_sendstr(req, esp_err_to_name(err));
+    }
+
+    char response[256];
+    int length = snprintf(response, sizeof(response),
+                          "{\"ok\":true,\"window_seconds\":%u,\"discovery\":\"%s\",\"diagnostic_giac_only\":%s,\"pairing_profile\":\"%s\"}",
+                          WIIMOTE_UPSTREAM_DISCOVERY_BASELINE ? 0U : (unsigned)WIIMOTE_SYNC_WINDOW_SECONDS,
+                          general_discoverable ? "general" : "limited",
+                          WIIMOTE_DIAGNOSTIC_GIAC_ONLY ? "true" : "false", PAIRING_PROFILE);
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "SYNC response formatting failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, response, (ssize_t)length);
+}
+
+static esp_err_t sync_general_handler(httpd_req_t *req)
+{
+    return sync_handler(req, true);
+}
+
+static esp_err_t sync_limited_handler(httpd_req_t *req)
+{
+    return sync_handler(req, false);
+}
+
+#if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
+static esp_err_t controller_readback_handler(httpd_req_t *req)
+{
+    if (req->content_len != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Controller readback request must not have a body");
+    }
+    esp_err_t err = wiimote_bt_trace_read_controller();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Controller readback queueing failed: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, esp_err_to_name(err));
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, "{\"queued\":true,\"results\":\"BT_HCI_RX serial logs\"}");
+}
+
+static esp_err_t bond_snapshot_handler(httpd_req_t *req)
+{
+    if (req->content_len != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Bond snapshot request must not have a body");
+    }
+    if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+        ESP_LOGW(TAG, "Bond snapshot requested before Bluetooth is ready");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Bluetooth is not ready");
+    }
+    int number = esp_bt_gap_get_bond_device_num();
+    if (number < 0 || esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+        ESP_LOGE(TAG, "Could not read bond count");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Bond count is unavailable");
+    }
+    if (number == 0) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_sendstr(req, "{\"bonded_count\":0,\"peers\":[]}");
+    }
+    if ((size_t)number > (SIZE_MAX - 64U) / 20U) {
+        ESP_LOGE(TAG, "Bond count is too large to encode");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "Bond count is too large");
+    }
+
+    size_t capacity = 64U + (size_t)number * 20U;
+    esp_bd_addr_t *peers = calloc((size_t)number, sizeof(esp_bd_addr_t));
+    char *body = malloc(capacity);
+    esp_err_t result;
+    if (!peers || !body) {
+        ESP_LOGE(TAG, "Could not allocate bond snapshot");
+        result = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                     "Bond snapshot allocation failed");
+        goto cleanup;
+    }
+    int actual = number;
+    esp_err_t err = esp_bt_gap_get_bond_device_list(&actual, peers);
+    if (err != ESP_OK || actual != number ||
+        esp_bt_gap_get_bond_device_num() != number ||
+        esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+        ESP_LOGW(TAG, "Bond snapshot unavailable or changed during read: %s",
+                 esp_err_to_name(err));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        result = httpd_resp_sendstr(req, "Bond snapshot changed or is unavailable; retry");
+        goto cleanup;
+    }
+
+    int length = wiimote_bond_json(peers, (size_t)actual, body, capacity);
+    if (length < 0) goto format_error;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    result = httpd_resp_send(req, body, (ssize_t)length);
+    goto cleanup;
+
+format_error:
+    ESP_LOGE(TAG, "Bond snapshot response formatting failed");
+    result = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                 "Bond snapshot formatting failed");
+cleanup:
+    free(peers);
+    free(body);
+    return result;
+}
+#endif
 
 static const httpd_uri_t s_index_uri = {
     .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL,
@@ -349,11 +569,28 @@ static const httpd_uri_t s_imu_uri = {
 static const httpd_uri_t s_button_uri = {
     .uri = "/api/button", .method = HTTP_POST, .handler = button_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_sync_uri = {
+    .uri = "/api/sync", .method = HTTP_POST, .handler = sync_limited_handler, .user_ctx = NULL,
+};
+static const httpd_uri_t s_sync_limited_uri = {
+    .uri = "/api/sync/limited", .method = HTTP_POST, .handler = sync_limited_handler, .user_ctx = NULL,
+};
+static const httpd_uri_t s_sync_general_uri = {
+    .uri = "/api/sync/general", .method = HTTP_POST, .handler = sync_general_handler, .user_ctx = NULL,
+};
+#if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
+static const httpd_uri_t s_controller_readback_uri = {
+    .uri = "/api/bt/controller", .method = HTTP_GET, .handler = controller_readback_handler, .user_ctx = NULL,
+};
+static const httpd_uri_t s_bond_snapshot_uri = {
+    .uri = "/api/bt/bonds", .method = HTTP_GET, .handler = bond_snapshot_handler, .user_ctx = NULL,
+};
+#endif
 
 static void start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -365,6 +602,13 @@ static void start_http_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_camera_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_imu_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_button_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_limited_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_general_uri));
+#if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_controller_readback_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_bond_snapshot_uri));
+#endif
 
     esp_netif_ip_info_t info = {0};
     ESP_ERROR_CHECK(esp_netif_get_ip_info(s_station, &info));
@@ -459,8 +703,21 @@ void wiimote_web_set_hid_connected(bool connected)
         s_hid_connected = connected;
     }
 
-    if (changed) ESP_LOGI(TAG, "DolphinBar HID %s", connected ? "connected" : "disconnected");
+    if (changed) ESP_LOGI(TAG, "Bluetooth HID %s", connected ? "connected" : "disconnected");
+    if (connected) wiimote_web_set_sync_window(false);
     if (!connected && changed && s_button_callback) s_button_callback(0);
+}
+
+void wiimote_web_set_sync_callback(wiimote_web_sync_callback_t callback)
+{
+    s_sync_callback = callback;
+}
+
+void wiimote_web_set_sync_window(bool active)
+{
+    portENTER_CRITICAL(&s_sync_status_mux);
+    s_sync_window_active = active;
+    portEXIT_CRITICAL(&s_sync_status_mux);
 }
 
 void wiimote_web_set_button_callback(wiimote_web_button_callback_t callback)

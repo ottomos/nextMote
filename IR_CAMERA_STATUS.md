@@ -1,6 +1,8 @@
 # Camera and IMU integration status
 
-Updated 29 October 2026 on `imu-addon`, based on local `main` at `bcd82a1`.
+Updated 1 November 2026 on `imu-addon`, based on local `main` at `bcd82a1`.
+
+The canonical implementation and test log is the [root plan](../plan.md); this file records camera/IMU-specific hardware observations and wiring.
 
 ## Implemented
 
@@ -15,15 +17,21 @@ Updated 29 October 2026 on `imu-addon`, based on local `main` at `bcd82a1`.
 
 ## Hardware check
 
-On 29 October, the user connected the SEN0158 with VCC at 3.3 V, yellow SDA mapped to GPIO21, and green SCL mapped to GPIO22. The live `/api/camera` response reported `detected:true`, `available:true`, and four non-empty points (sample: P0 `(653,298)`, P1 `(623,302)`, P2 `(644,352)`, P3 `(213,318)`). This verifies camera detection and frame decoding on this board.
+On 29 October, I connected the SEN0158 with VCC at 3.3 V, yellow SDA mapped to GPIO21, and green SCL mapped to GPIO22. The live `/api/camera` response reported `detected:true`, `available:true`, and four non-empty points (sample: P0 `(653,298)`, P1 `(623,302)`, P2 `(644,352)`, P3 `(213,318)`). This verifies camera detection and frame decoding on this board.
 
 An experimental High sensitivity profile was checked in the legacy firmware: remote-control IR produced transient points, while the DolphinBar produced none in a 10-second sample. A subsequent ESP-IDF build with High sensitivity was reported to run Wii Sports with two visible points; `/api/camera` returned `(729,509)` and `(294,488)`. The current modular ESP-IDF firmware has been flashed with the DFRobot default profile, so game and point behavior should be retested after reconnecting.
 
-On the current modular firmware with the DFRobot default sensitivity profile, the user repeatedly reports that after an ESP32 power cycle all points show `1023` until DolphinBar SYNC is pressed, after which locations register. The camera service initializes during app startup and polls every 50 ms; the HID-open/SYNC path does not start or reinitialize it. A read-only sample after one report showed `connected:true`, `detected:true`, `available:true`, but all points were empty at that instant, so samples need to be captured during the transition. The cause is not established.
+On the current modular firmware with the DFRobot default sensitivity profile, I repeatedly reports that after an ESP32 power cycle all points show `1023` until DolphinBar SYNC is pressed, after which locations register. The camera service initializes during app startup and polls every 50 ms; the HID-open/SYNC path does not start or reinitialize it. A read-only sample after one report showed `connected:true`, `detected:true`, `available:true`, but all points were empty at that instant, so samples need to be captured during the transition. The cause is not established.
 
-Immediately after flashing the pointer branch, `/api/camera` first reported `detected:false` and `available:false`. The user reset the ESP32 and camera detection returned; a later sample reported two points `(416,468)` and `(162,427)` with HID connected. The user then confirmed the Wii Sports pointer appeared and tracked camera movement. This verifies basic pointer operation in that setup. The initial probe failure/reset relationship is still unexplained.
+Immediately after flashing the pointer branch, `/api/camera` first reported `detected:false` and `available:false`. I reset the ESP32 and camera detection returned; a later sample reported two points `(416,468)` and `(162,427)` with HID connected. I then confirmed the Wii Sports pointer appeared and tracked camera movement. This verifies basic pointer operation in that setup. The initial probe failure/reset relationship is still unexplained.
 
-The user later reported that removing camera power changed the page to “Camera not detected,” and restoring power returned camera detection. A frame showing `1023` for all points means no IR points were found; it does not mean the camera is disconnected.
+I later found that removing camera power changed the page to “Camera not detected,” and restoring power returned camera detection. A frame showing `1023` for all points means no IR points were found; it does not mean the camera is disconnected.
+
+### vWii pointer check — 1 November 2026
+
+After I connected the SEN0158 and used the DolphinBar as an IR sensor bar, `/api/camera` reported `detected:true`, `available:true`, and two visible points (`(873,459)` and `(520,715)`); the other two slots were `(1023,1023)`. I saw the pointer become visible in vWii after increasing the camera/sensor-bar separation. I did not measure the exact distance or screen-tracking accuracy. This confirms a visible pointer in that setup only; it does not establish calibrated or stable tracking across games. The DolphinBar's Bluetooth-host function was not used during this IR test.
+
+I later pressed DolphinBar SYNC, connected espMote to Dolphin, and confirmed the buttons worked. That is a Bluetooth-host test, distinct from the IR sensor-bar observation above; I did not capture camera/serial traces for it.
 
 ## BNO08x IMU orientation
 
@@ -55,8 +63,8 @@ The native driver implements the sensor protocol and bit layout documented by DF
 ## Not implemented or not verified
 
 - Repeated/long-term operation, camera connection when it is absent at ESP32 startup, 5 V plus level-shifter wiring, and combined camera/MPU operation have not been tested. Power cycling the camera after successful initialization was reported to clear and restore detection.
-- The user previously reported that the camera and motion sensor each worked separately in the legacy setup, but they were not tested together. The `imu-addon` branch now includes BNO08x orientation acquisition and web display; current-hardware testing is still pending.
-- Raw camera points are sent in HID report `0x33` on the pointer branch. After the mirrored-axis build was flashed, the user confirmed that both pointer and buttons work in Wii Sports and Mario Kart, with pointer directions corrected. The pointer remains twitchy; smoothing, other games, and long-duration behavior remain unverified. A later API sample showed `available:true` but all points empty, so coordinate reporting may be intermittent.
+- I previously found that the camera and motion sensor each worked separately in the legacy setup, but they were not tested together. The `imu-addon` branch now includes BNO08x orientation acquisition and web display; current-hardware testing is still pending.
+- Raw camera points are sent in HID report `0x33` on the pointer branch. After the mirrored-axis build was flashed, I confirmed that both pointer and buttons work in Wii Sports and Mario Kart, with pointer directions corrected. The pointer remains twitchy; smoothing, other games, and long-duration behavior remain unverified. A later API sample showed `available:true` but all points empty, so coordinate reporting may be intermittent.
 - No calibration, filtering, smoothing, point association, or higher-level tracking is implemented.
 - The shared sensor I2C bus owns port 0 on GPIO21/22. Additional sensors must use this bus rather than initialize a second master on those pins; simultaneous camera/BNO hardware operation remains unverified.
 - Accelerometer values remain stationary placeholders. No camera coordinate transform, smoothing, calibration, or point association is implemented.

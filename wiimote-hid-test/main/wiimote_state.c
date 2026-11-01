@@ -14,6 +14,8 @@ void wiimote_state_open(void)
     portENTER_CRITICAL(&s_state_mux);
     s_state.connected = true;
     memset(s_state.buttons, 0, sizeof(s_state.buttons));
+    s_state.report_mode = WIIMOTE_REPORT_BUTTONS;
+    s_state.continuous_reporting = false;
     s_state.ir_logic_enabled = false;
     s_state.ir_sensor_enabled = false;
     portEXIT_CRITICAL(&s_state_mux);

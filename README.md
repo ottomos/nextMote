@@ -1,6 +1,12 @@
-# ESPmote
+# espMote
 
-An ESP32 Bluetooth Classic HID-device prototype that presents a Wii Remote-like HID identity to a Mayflash DolphinBar. This is experimental firmware, **not a complete Wii Remote replacement**. Bluetooth pairing, HID channels, status/LED exchange, a Wi-Fi web controller and button reports have been exercised through the DolphinBar. The user reports that Mario Kart Wii accepts web-generated A input after a game restart, and that the current trace-driven build allows entry into both Mario Kart Wii and Wii Sports in the tested Dolphin + DolphinBar mode 4 setup. These are narrow, user-reported results, not general compatibility certification or proof of full gameplay support.
+In this documentation, **wiimote** means the genuine Nintendo device and
+**espMote** means this project's implementation. Chip model names and quoted
+API/log identifiers retain their original spelling.
+
+An ESP32 Bluetooth Classic HID-device prototype that presents a wiimote-like HID identity to a Mayflash DolphinBar. This is experimental firmware, **not a complete wiimote replacement**. Bluetooth pairing, HID channels, status/LED exchange, a Wi-Fi web controller and button reports have been exercised through the DolphinBar. I found that Mario Kart Wii accepts web-generated A input after a game restart, and that the current trace-driven build allows entry into both Mario Kart Wii and Wii Sports in the tested Dolphin + DolphinBar mode 4 setup. These are narrow, my observed results, not general compatibility certification or proof of full gameplay support.
+
+> **Current milestone (1 November 2026):** The timed Limited profile uses a 30-second SYNC window and CoD `0x002504`. The standard five-cycle PC test passed 5/5 GIAC and 5/5 LIAC; short 2.56-second scans measured 4/5 GIAC and 5/5 LIAC. On Wii U, I used Plus in the native menu; in vWii, I followed the console-SYNC-then-espMote-SYNC sequence, confirmed Plus/Minus page changes, and saw the pointer after repositioning. I also tested DolphinBar SYNC with Dolphin and confirmed button input; the bar served only as an IR sensor in the vWii test. These are partial results, not full game certification. D-pad, motion, long-term stability/reconnect, and full game coverage remain unverified. The single source of truth for current results and next steps is the [root implementation plan](../plan.md); batch-refresh this overview after milestones.
 
 ## Hardware and software
 
@@ -24,12 +30,12 @@ idf.py -p PORT flash monitor
 
 Replace `PORT` with the serial path for your board (for example, `/dev/ttyUSB0`). The monitor runs at 115200 baud. To exit it, press `Ctrl-]`.
 
-The default configuration advertises `Nintendo RVL-CNT-01` and enables limited-discoverable mode. It also enlarges the SDP buffers so the HID report descriptor is published. If DolphinBar behavior differs, `EXAMPLE_LIMITED_DISCOVERABLE` can be toggled through `idf.py menuconfig` under **HID Example Configuration**.
+espMote advertises `Nintendo RVL-CNT-01` but starts non-discoverable. The standard **SYNC · 30 seconds** button selects Limited discovery, with CoD `0x002504` configured before scan enable; `/api/sync/limited` is an alias and `/api/sync/general` retains the GIAC-only diagnostic. HCI readback shows espMote supports only **one** inquiry access code, so it alternates LIAC/GIAC and rearms inquiry scan while retaining page scan. The latest standard five-cycle PC test passed **5/5 GIAC and 5/5 LIAC with CoD `0x002504`**; after timeout, one-cycle idle checks found espMote in neither code. Short 2.56-second probes are less consistent (latest: GIAC 4/5, LIAC 5/5). These are discovery checks, not proof of full wiimote parity.
 
 ## Cold-boot connection test
 
 1. Close Dolphin or other software that may claim the DolphinBar's hidraw devices.
-2. Power down the ESP32 and unplug the bar.
+2. Power down espMote and unplug the bar.
 3. Start the live test before plugging either device in:
 
    ```bash
@@ -37,17 +43,29 @@ The default configuration advertises `Nintendo RVL-CNT-01` and enables limited-d
    python3 tools/espmote_live_test.py
    ```
 
-4. Plug in the DolphinBar, set it to mode 4, and power the ESP32.
-5. Press the DolphinBar's SYNC button when the terminal is ready.
-6. In a second terminal, monitor the ESP32's occupied slot (replace `N` with the reported slot):
+4. Plug in the DolphinBar, set it to mode 4, and power espMote.
+5. Open the Wi-Fi page at the IP printed in espMote serial log. Press **SYNC · 30 seconds** on the page, then press the DolphinBar's SYNC button while the pairing window is active. This procedure tests the DolphinBar as a Bluetooth host; the latest Wii U/vWii test used it only as an IR sensor bar.
+6. In a second terminal, monitor espMote's occupied slot (replace `N` with the reported slot):
 
    ```bash
    python3 tools/dolphinbar_button_watch.py --slot N --seconds 60
    ```
 
-   The fake-button branch sends `FAKE_BUTTON press NAME` / release logs on ESP32 serial. The Wi-Fi web-control branch sends live press/release states from the page instead of cycling.
+   The fake-button branch sends `FAKE_BUTTON press NAME` / release logs on espMote serial. The Wi-Fi web-control branch sends live press/release states from the page instead of cycling.
 
-The monitor shows ESP32 serial events and bar USB slot occupancy together. A successful test should show a legacy PIN request, authentication success, `WIIREMOTE_HID_CONNECTED`, a configured report mode, and an occupied DolphinBar slot. Use `Ctrl-C` to stop. Set `--port /dev/ttyUSB0` if automatic serial-port detection chooses the wrong device; use `--seconds 600` for a ten-minute observation window.
+The monitor shows espMote serial events and bar USB slot occupancy together. A successful test should show a legacy PIN request, authentication success, `WIIREMOTE_HID_CONNECTED`, a configured report mode, and an occupied DolphinBar slot. Use `Ctrl-C` to stop. Set `--port /dev/ttyUSB0` if automatic serial-port detection chooses the wrong device; use `--seconds 600` for a ten-minute observation window.
+
+**Earlier Wii U attempts (historical):** a 20-second Limited attempt reached ACL/PIN/HID but was followed by a reported console freeze; another earlier attempt saw no connection request. Those results are superseded by the current vWii milestone above, but the freeze cause and repeatability remain unresolved. See the [pairing notes](./wiimote-hid-test/README.md#pairing-and-logs) and [current test log](../plan.md).
+
+Fresh wiimote SDP captures exposed 11 HID and five Device ID differences. The reference-matched policy now passes hardware comparison in all 24 HID and 10 Device ID attributes. The `0x1770` response matches all 23 wiimote bytes. Removing unsolicited startup status also made the actual `0x30, 0x21` sequence match exactly; explicit status requests still work. All 23 focused Python tests, native checks, trace-enabled/disabled builds, flash verification and the final 5/5 GIAC plus 5/5 LIAC run pass. The next required evidence is an optional controlled Wii U connection/input test, not more unchanged laptop loops. No freeze fix or full game compatibility is claimed.
+
+Earlier controlled Wii U attempts (before the current vWii result) included a 20-second window with no incoming connection request, and an unstable attempt that froze after HID open. These are historical failure modes; the latest native-menu/vWii result is summarized above and in the [implementation plan](../plan.md).
+
+**DolphinBar result (separate host test):** I pressed DolphinBar SYNC, connected to Dolphin, and confirmed the buttons worked. This was separate from the Wii U/vWii test, where I used the bar only as an IR sensor. I did not capture serial logs or run a long soak for this test.
+
+**Short inquiry detail:** the current 0.64-second IAC rotation and faster inquiry-scan interval preserve the observed R1 page fields. The latest 2.56-second per-code sample was GIAC 4/5 and LIAC 5/5, while the standard 7.68-second five-cycle test passed 5/5 for both. The default-off `WIIMOTE_DIAGNOSTIC_GIAC_ONLY` option remains a diagnostic only; it is not full parity.
+
+A reviewed upstream commit explicitly claims real-Wii operation and uses continuously connectable **General** discovery while idle. My approved `WIIMOTE_UPSTREAM_DISCOVERY_BASELINE` profile now provides that lifecycle as an explicit default-off comparison: no 20-second idle timeout, hide on HID connection, rearm on confirmed disconnect. UI/API identify it as `upstream-general-continuous`; the normal timed profile is available with the flag off. Build, 36 Python contracts, and UI syntax checks pass; hardware activation requires Wii U off and DolphinBar disconnected. See the [baseline instructions](./wiimote-hid-test/README.md#upstream-discovery-baseline-profile). This is not a Wii U compatibility claim or a full reproduction of upstream BTDM firmware.
 
 Useful additional probes:
 
@@ -57,21 +75,31 @@ python3 tools/dolphinbar_button_watch.py --slot 1 --seconds 60
 python3 tools/dolphinbar_sync_test.py --no-inquiry
 ```
 
-The slot probe and watcher are read-only with respect to pairing. Do not run them at the same time as Dolphin: both need access to the same HID endpoints. In the fake-button demo, choose the ESP32's slot with `--slot N`; run the watcher to see each press/release label.
+The slot probe and watcher are read-only with respect to pairing. Do not run them at the same time as Dolphin: both need access to the same HID endpoints. In the fake-button demo, choose espMote's slot with `--slot N`; run the watcher to see each press/release label.
 
 ## Current scope and limitations
 
 - **Verified through the DolphinBar:** Classic Bluetooth pairing/authentication, HID open, host report-mode and LED commands, status request/reply, and web-generated core-button reports at the bar's USB HID slot. The captured Mario Kart Wii startup trace produced the expected error-8 reply for EEPROM probe `0x1770`, then handled report `0x1A`.
-- **Game results reported by the user:** Mario Kart Wii accepted web-generated A input and continued working after a game restart. After the trace-driven compatibility build was flashed, the user also reported being able to enter both Mario Kart Wii and Wii Sports. These results apply to the tested Dolphin + DolphinBar mode 4 + ESP32 setup only. Wii Sports Resort is future work and is not supported or tested; its MotionPlus requirements are not implemented. Full gameplay, all controls, other games, real Wii hardware, and Wii U compatibility remain unverified. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect.
-- The captured startup trace reads EEPROM `0x1770`; Dolphin's reference implementation rejects it with invalid-address error 8. ESPmote replied `00 00 F8 17 70 00 ...`; the same trace showed output feature report `0x1A`, which ESPmote now accepts and success-ACKs. No calibration read at `0x0016` appeared in that capture.
+- **My game results:** Mario Kart Wii accepted web-generated A input and continued working after a game restart. After the trace-driven compatibility build was flashed, I also reported being able to enter both Mario Kart Wii and Wii Sports. These results apply to the tested Dolphin + DolphinBar mode 4 + espMote setup only. Wii Sports Resort is future work and is not supported or tested; its MotionPlus requirements are not implemented. Full gameplay, all controls, other games, real Wii hardware, and Wii U compatibility remain unverified. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect.
+- The captured startup trace reads EEPROM `0x1770`; Dolphin's reference implementation rejects it with invalid-address error 8. espMote replied `00 00 F8 17 70 00 ...`; the same trace showed output feature report `0x1A`, which espMote now accepts and success-ACKs. No calibration read at `0x0016` appeared in that capture.
 - The Wi-Fi HTTP page offers A/B/1/2, D-pad, Plus/Minus/Home and A+B/1+2. Credentials must be entered locally via `idf.py menuconfig` under **HID Example Configuration** and stay in ignored `sdkconfig`; never put them in `sdkconfig.defaults`, source, or commits.
-- **Camera and pointer:** the ESP-IDF SEN0158 driver provides a live plot/table and the `wiimote-ir-pointer` branch sends camera points in report `0x33`. After the mirrored-axis change, the user confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy, and broader game compatibility is unverified. Startup is optional: without a camera at `0x58`, firmware logs the failure and continues Wi-Fi/Bluetooth startup. See [IR_CAMERA_STATUS.md](./IR_CAMERA_STATUS.md) and the [assembly guide](./ASSEMBLY_GUIDE.html).
-- **IMU orientation test:** the `imu-addon` branch adds a native ESP-IDF BNO08x service and the web page displays roll, pitch, yaw, and an orientation cube. For an IMU-only check, the camera can remain disconnected; `/api/imu` reports detection and orientation availability. The BNO uses GPIO21/22, RST=GPIO26, and INT=GPIO27. BNO readings are not yet sent in Wii Remote HID accelerometer reports.
+- **Camera and pointer:** the ESP-IDF SEN0158 driver provides a live plot/table and the `wiimote-ir-pointer` branch sends camera points in report `0x33`. After the mirrored-axis change, I confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy, and broader game compatibility is unverified. Startup is optional: without a camera at `0x58`, firmware logs the failure and continues Wi-Fi/Bluetooth startup. See [IR_CAMERA_STATUS.md](./IR_CAMERA_STATUS.md) and the [assembly guide](./ASSEMBLY_GUIDE.html).
+- **IMU orientation test:** the `imu-addon` branch adds a native ESP-IDF BNO08x service and the web page displays roll, pitch, yaw, and an orientation cube. For an IMU-only check, the camera can remain disconnected; `/api/imu` reports detection and orientation availability. The BNO uses GPIO21/22, RST=GPIO26, and INT=GPIO27. BNO readings are not yet sent in wiimote HID accelerometer reports.
 - **Wii Sports trace fixes from `main`:** mode `0x33` uses a 17-byte buttons/accelerometer/IR payload; EEPROM `0x0000`-`0x0029` returns duplicated checksum-valid synthetic calibration; I2C writes to IR slave `0x58` are accepted and reads at `0x36` return an empty-point frame; status reflects both IR-enable stages. Mode-`0x30` button updates remain event-driven. See [the trace table](./wiimote-hid-test/README.md#wii-sports-trace-requests-prior-replies-and-corrections).
-- **Motion/IR limits:** the pointer branch sends camera points to HID report `0x33`; pointer and button operation with mirrored axes was confirmed in Wii Sports and Mario Kart. The `imu-addon` branch adds a BNO08x orientation panel/API for hardware testing, but does not feed IMU data to Wii Remote HID reports. Camera/IMU simultaneous operation is not yet verified. Pointer smoothing/calibration and MotionPlus emulation remain out of scope.
-- **Not implemented:** physical controls, a real Nunchuk or other extension, live accelerometer data in Wii Remote HID reports, smoothed/calibrated pointer behavior across games, speaker audio, or rumble. EEPROM and I2C behavior remain partial despite the tested-range calibration and IR-register shims; they are not full device emulators. Memory reads are paced in 10 ms intervals between 16-byte reports.
-- **Current game scope:** the user reports entering Mario Kart Wii and Wii Sports in the tested Dolphin + DolphinBar mode 4 + ESP32 setup, with previous A-button success in Mario Kart Wii. Wii Sports Resort is future work and is not supported or tested; its MotionPlus requirements are outside the current scope.
-- **Still unverified:** full game-control coverage, games beyond the user-reported tests, real Wii, Wii U native/vWii, persistent reconnects, and long-duration soak behavior. HID connection and a button report at the bar do not by themselves establish full compatibility.
-- **Source/library provenance:** The IMU branch depends on `rinku404/bno085` v1.2.0 through ESP-IDF Component Manager; the driver and included CEVA SH2 library are Apache-2.0. The firmware does not link or vendor WiiUse or Dolphin code. Protocol details were consulted from WiiBrew's Wiimote protocol documentation, WiiUse's `wiiuse.h`/`io.c`/`wiiuse_internal.h` protocol constants and reference behavior, and Dolphin's `WiimoteConstants.h`, `WiimoteReport.h`, `WiimoteReal.cpp`, and `WiimoteEmu/EmuSubroutines.cpp`. Those repositories are protocol references only; their source files were not copied into this project. See the attribution section in [`wiimote-hid-test/README.md`](wiimote-hid-test/README.md).
+- **Motion/IR limits:** the pointer branch sends camera points to HID report `0x33`; pointer and button operation with mirrored axes was confirmed in Wii Sports and Mario Kart. The `imu-addon` branch adds a BNO08x orientation panel/API for hardware testing, but does not feed IMU data to wiimote HID reports. Camera/IMU simultaneous operation is not yet verified. Pointer smoothing/calibration and MotionPlus emulation remain out of scope.
+- **Not implemented:** physical controls, a real Nunchuk or other extension, live accelerometer data in wiimote HID reports, smoothed/calibrated pointer behavior across games, speaker audio, or rumble. EEPROM and I2C behavior remain partial despite the tested-range calibration and IR-register shims; they are not full device emulators. Memory reads are paced in 10 ms intervals between 16-byte reports.
+- **Current game scope:** I report entering Mario Kart Wii and Wii Sports in the tested Dolphin + DolphinBar mode 4 + espMote setup, with previous A-button success in Mario Kart Wii. Wii Sports Resort is future work and is not supported or tested; its MotionPlus requirements are outside the current scope.
+- **Still unverified:** D-pad behavior and game controls in vWii, motion/accelerometer reporting, pointer accuracy across the screen, stable reconnects across Wii U/vWii transitions, original Wii compatibility, and long-duration soak behavior. The observed Wii U/vWii pairing and partial input are not full game compatibility. HID connection alone does not establish full compatibility.
+- **Source/library provenance:** The IMU branch depends on `rinku404/bno085` v1.2.0 through ESP-IDF Component Manager; the driver and included CEVA SH2 library are Apache-2.0. The firmware does not link or vendor WiiUse or Dolphin code. Protocol details were consulted from WiiBrew's wiimote protocol documentation, WiiUse's `wiiuse.h`/`io.c`/`wiiuse_internal.h` protocol constants and reference behavior, and Dolphin's `WiimoteConstants.h`, `WiimoteReport.h`, `WiimoteReal.cpp`, and `WiimoteEmu/EmuSubroutines.cpp`. Those repositories are protocol references only; their source files were not copied into this project. See the attribution section in [`wiimote-hid-test/README.md`](wiimote-hid-test/README.md).
+
+## Attribution and references
+
+I used **[pknessness's ESPmote work](https://github.com/pknessness/ESPmote)** as an important upstream reference for this project, particularly the [real-Wii initialization revision](https://github.com/pknessness/ESPmote/commit/272d810f1740585d8185a1757ad00b97be4d19b6). Thanks also to the [Loren Ashfield reference work credited upstream](https://github.com/pknessness/ESPmote/blob/272d810f1740585d8185a1757ad00b97be4d19b6/main/espmote_main.c#L204).
+
+- Platform/drivers: [Espressif ESP-IDF/Bluedroid](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/), [rinku404/bno085](https://components.espressif.com/components/rinku404/bno085/versions/1.2.0/readme) with CEVA SH2, and [DFRobot SEN0158 documentation](https://wiki.dfrobot.com/IR_Positioning_Camera_For_Arduino_SKU_SEN0158).
+- Protocol/workflow references: [WiiBrew](https://wiibrew.org/wiki/Wiimote), [WiiUse](https://github.com/wiiuse/wiiuse), [Dolphin](https://github.com/dolphin-emu/dolphin), and [XWiimote/ArchWiki](https://wiki.archlinux.org/title/XWiimote).
+- Bench/pairing resources: [BlueZ](https://github.com/bluez/bluez/tree/5.72), [Nintendo's Wii U pairing instructions](https://www.nintendo.com/au/support/articles/how-to-pair-a-wii-remote-with-the-wii-u-console/), and [Mayflash DolphinBar documentation](https://www.mayflash.com/product/showproduct.php?id=6).
+
+WiiUse and Dolphin are protocol references, not linked/copied libraries in this firmware. Existing driver/SDK licenses and provenance remain documented above and in the firmware README. The [connection plan](../espmote-connection-plan.html#s1) contains the wider research source list.
 
 See [`wiimote-hid-test/README.md`](wiimote-hid-test/README.md) for firmware details and debugging.

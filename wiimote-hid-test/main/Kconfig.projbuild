@@ -18,12 +18,11 @@ menu "HID Example Configuration"
         depends on BT_CLASSIC_ENABLED
         default y
         help
-            A genuine Wii Remote in sync mode advertises Class of Device
-            0x002504, which includes the limited-discoverable service bit, and
-            answers the Limited Inquiry Access Code. Enable this to reproduce
-            that behaviour. Disable it to fall back to general discoverable
-            mode (CoD 0x000504) if the host performs a general inquiry
-            instead. Verify the measured CoD with "hcitool inq --flush".
+            Select startup discoverability when Wi-Fi web control is disabled.
+            The web SYNC button always uses a bounded limited-discovery window
+            with CoD 0x002504. Controllers supporting only one inquiry access
+            code alternate LIAC/GIAC during that window. General/GIAC-only
+            discovery remains available at /api/sync/general for diagnostics.
 
     config EXAMPLE_FAKE_BUTTON_DEMO
         bool "Cycle fake core buttons while connected"
@@ -33,6 +32,18 @@ menu "HID Example Configuration"
             Repeatedly press and release each of the 11 Wii Remote core
             buttons in sequence after the host selects continuous report 0x30.
             Keep disabled when using Wi-Fi web control.
+
+    config EXAMPLE_BT_DISCOVERY_TRACE
+        bool "Trace Bluetooth discovery HCI commands and connection events"
+        depends on BT_CLASSIC_ENABLED && BT_BLUEDROID_ENABLED
+        default n
+        help
+            Project-local diagnostic for the ESP-IDF 6 Bluedroid transport.
+            Log selected HCI commands, their controller completion status, and
+            connection events without changing packets. PIN values, link keys,
+            and ACL payloads are excluded. This does not capture radio inquiry
+            packets; those are handled inside the controller. Disable for
+            normal use. No ESP-IDF source or global driver changes are made.
 
     config EXAMPLE_WIFI_WEB_CONTROL
         bool "Enable Wi-Fi web button controller"

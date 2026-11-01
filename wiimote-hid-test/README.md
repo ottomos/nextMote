@@ -1,32 +1,36 @@
-# ESP32 Bluetooth Classic Wii Remote HID test
+# espMote Bluetooth Classic wiimote HID test
 
-This ESP-IDF project configures the original ESP32 as a Bluetooth Classic HID peripheral using Bluedroid. It advertises the `Nintendo RVL-CNT-01` name and handles the legacy PIN flow tested with DolphinBar SYNC. It remains a partial, experimental Wii Remote emulation.
+This ESP-IDF project configures the original ESP32 as a Bluetooth Classic HID peripheral using Bluedroid. It advertises the `Nintendo RVL-CNT-01` name, publishes Nintendo's Device ID SDP record (`057e:0306`), and implements a web-triggered, 30-second bonded SYNC window using timed Limited discovery. The current one-IAC controller profile rotates GIAC/LIAC every 0.64 seconds, with a `0x0012` inquiry-scan window at `0x0400` interval and R1 page scanning. The standard five-cycle PC test passed 5/5 for both codes with CoD `0x002504`; short 2.56-second scans were less consistent. The firmware remains a partial, experimental wiimote emulation.
 
-## Verified on ESP32-WROOM + Mayflash DolphinBar (mode 4)
+> **Current implementation status and next steps:** the single source of truth is the [root implementation plan](../../plan.md). This README is a stable technical overview; refresh its changing status summaries in milestone batches.
+
+## Previously verified with espMote (ESP32-WROOM) + Mayflash DolphinBar (mode 4)
 
 - Legacy PIN pairing/authentication and both HID channels open.
 - The bar selects input report `0x30`, sends LED/status requests, and receives responses.
-- Wi-Fi HTTP controller page loads; button POSTs update the ESP32's button state.
+- Wi-Fi HTTP controller page loads; button POSTs update espMote's button state.
 - Web-generated core-button reports have been observed at the DolphinBar USB slot with the slot watcher.
 - A cold connection was observed with serial log `WIIREMOTE_HID_CONNECTED peer=...` and DolphinBar slot status.
 
-The DolphinBar transport and button-report path are verified. The user reports Mario Kart Wii accepts ESPmote A input after a game restart on this Dolphin + DolphinBar mode 4 + ESP32 setup. After the trace-driven build below was flashed, the user also reported being able to enter both Mario Kart Wii and Wii Sports. These are narrow, user-reported results; full gameplay, all controls, other games, real Wii hardware, and Wii U are not certified. Wii Sports Resort is future work and is not implemented or tested; its MotionPlus requirements are outside the current scope.
+The DolphinBar transport and button-report path are verified. I report Mario Kart Wii accepts espMote A input after a game restart on this Dolphin + DolphinBar mode 4 + espMote setup. After the trace-driven build below was flashed, I also reported being able to enter both Mario Kart Wii and Wii Sports. These are narrow, my observed results; full gameplay, all controls, other games, real Wii hardware, and Wii U are not certified. Wii Sports Resort is future work and is not implemented or tested; its MotionPlus requirements are outside the current scope.
 
-The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. Dolphin's reference behavior is invalid-address error 8; ESPmote returned `00 00 F8 17 70 00 ...` (metadata `0xf8`: size-minus-one 15, error 8). The host then changed report mode and requested status. The trace also shows feature report `0x1A` with ACK requested; firmware now accepts and success-ACKs it. No calibration read at `0x0016` was observed in that trace. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect. Flashing resets the HID link; press SYNC if it no longer reconnects.
+The genuine wiimote reference reports CoD `0x002504` in GIAC/LIAC. The upstream-General comparison profile instead reports `0x000504`; the current timed Limited profile reports `0x002504`. Its standard five-cycle PC test passed 5/5 in both codes, while short 2.56-second probes remain less consistent. Laptop SDP and HID PSM comparisons are documented in the [current test log](../../plan.md).
 
-## Current behavior and missing real-Wiimote features
+The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. Dolphin's reference behavior is invalid-address error 8; espMote returned `00 00 F8 17 70 00 ...` (metadata `0xf8`: size-minus-one 15, error 8). The host then changed report mode and requested status. The trace also shows feature report `0x1A` with ACK requested; firmware now accepts and success-ACKs it. No calibration read at `0x0016` was observed in that trace. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect. After flashing, use the web SYNC button to open the 30-second pairing window.
 
-The Wi-Fi page provides core buttons A, B, 1, 2, D-pad, Plus, Minus and Home, plus A+B and 1+2 combinations. It sends held-button state and clears bits on release. SSID/password are local `sdkconfig` values configured through `idf.py menuconfig`; `sdkconfig` is ignored and must never be committed.
+## Current behavior and missing wiimote features
 
-The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, the user confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
+The Wi-Fi page provides core buttons A, B, 1, 2, D-pad, Plus, Minus and Home, plus A+B and 1+2 gameplay combinations. It sends held-button state and clears bits on release. The SYNC control opens a 30-second bonded-pairing discovery window; it makes espMote discoverable, while the console initiates the connection. The 1+2 gameplay control does not trigger Bluetooth pairing. SSID/password are local `sdkconfig` values configured through `idf.py menuconfig`; `sdkconfig` is ignored and must never be committed.
 
-On `imu-addon`, the BNO08x uses the ESP-IDF `rinku404/bno085` component on the shared GPIO21/22 I2C bus. It probes `0x4B` and `0x4A`, enables the rotation vector at 100 Hz, and exposes roll/pitch/yaw at `/api/imu`; the web page shows an orientation cube as in the legacy camera app. The current component requires BNO INT on GPIO27 and RST on GPIO26. BNO motion is displayed only; real acceleration is not yet sent in Wii Remote HID reports. Camera-only or IMU-only startup is supported in code; simultaneous sensor hardware remains to be verified.
+The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, I confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
+
+On `imu-addon`, the BNO08x uses the ESP-IDF `rinku404/bno085` component on the shared GPIO21/22 I2C bus. It probes `0x4B` and `0x4A`, enables the rotation vector at 100 Hz, and exposes roll/pitch/yaw at `/api/imu`; the web page shows an orientation cube as in the legacy camera app. The current component requires BNO INT on GPIO27 and RST on GPIO26. BNO motion is displayed only; real acceleration is not yet sent in wiimote HID reports. Camera-only or IMU-only startup is supported in code; simultaneous sensor hardware remains to be verified.
 
 ### IMU-only orientation check
 
-The IMU service shares the GPIO21/22 I2C bus but starts independently of camera detection. For an IMU-only bench test, power off the ESP32 and connect only the GY-BNO08X: VCC/VIN to 3V3, GND to common ground, SDA/SCL to GPIO21/22, RST to GPIO26, and active-low INT to GPIO27. Leave the camera disconnected. Keep PS0/PS1 in I2C mode and AD0 at its default; firmware probes `0x4B` and `0x4A`.
+The IMU service shares the GPIO21/22 I2C bus but starts independently of camera detection. For an IMU-only bench test, power off espMote and connect only the GY-BNO08X: VCC/VIN to 3V3, GND to common ground, SDA/SCL to GPIO21/22, RST to GPIO26, and active-low INT to GPIO27. Leave the camera disconnected. Keep PS0/PS1 in I2C mode and AD0 at its default; firmware probes `0x4B` and `0x4A`.
 
-Build and flash this branch, power up, and open the ESPmote page. The camera panel may say “Camera not detected”; the IMU panel should show the detected address and then live roll, pitch, and yaw. `GET /api/imu` returns `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`. Rotate the board by hand to confirm the values change. This tests orientation display only; BNO acceleration is not yet connected to Wii Remote HID reports.
+Build and flash this branch, power up, and open the espMote page. The camera panel may say “Camera not detected”; the IMU panel should show the detected address and then live roll, pitch, and yaw. `GET /api/imu` returns `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`. Rotate the board by hand to confirm the values change. This tests orientation display only; BNO acceleration is not yet connected to wiimote HID reports.
 
 ### Wii Sports trace: requests, previous replies, and current behavior
 
@@ -41,7 +45,7 @@ The 29 October capture showed Wii Sports selecting report `0x33` and initializin
 | I2C writes to slave `0x58` and frame read at `0x36` | NACK/error 7 for writes; no frame | Store valid writes in a synthetic register bank, acknowledge them, and return a 16-byte empty-point frame. |
 | IR enable reports `0x13` and `0x1A`, followed by status | Enable ACKs but IR status flag clear | Track both enable stages and set the status flag when both are enabled. |
 
-The user reports being able to enter Mario Kart Wii and Wii Sports with the prior flashed build. On `wiimote-ir-pointer`, the user confirmed that pointer and buttons work in both Wii Sports and Mario Kart after the mirrored-axis build was flashed. Pointer movement remains twitchy. These are setup-specific results, not complete gameplay or general compatibility validation. The synthetic accelerometer remains stationary. The report watcher decodes buttons from reports `0x30`-`0x33`. Wii Sports Resort remains future work; MotionPlus support is not implemented.
+I was able to enter Mario Kart Wii and Wii Sports with the prior flashed build. On `wiimote-ir-pointer`, I confirmed that pointer and buttons work in both Wii Sports and Mario Kart after the mirrored-axis build was flashed. Pointer movement remains twitchy. These are setup-specific results, not complete gameplay or general compatibility validation. The synthetic accelerometer remains stationary. The report watcher decodes buttons from reports `0x30`-`0x33`. Wii Sports Resort remains future work; MotionPlus support is not implemented.
 
 The firmware does **not** yet provide:
 
@@ -49,9 +53,9 @@ The firmware does **not** yet provide:
 - A real Nunchuk, Classic Controller or other extension; no analog stick is available.
 - Live accelerometer/motion data, smoothed pointer behavior across games, speaker output, and rumble. Mirrored-axis pointer and button operation is confirmed in Wii Sports and Mario Kart only.
 - Complete EEPROM/calibration and extension-I2C register behavior. The firmware returns a valid synthetic calibration map and emulates only the IR register behavior seen in the trace; it is not a full EEPROM/I2C device model. Memory reads are queued and paced in 10 ms intervals between 16-byte reports.
-- Full game-control coverage beyond the user-reported Mario Kart Wii and Wii Sports entry tests, real Wii/Wii U compatibility, persistent reconnects, and soak tests remain unverified.
+- Full game-control coverage beyond the observed Wii U Menu/vWii Plus/Minus input and pointer, original Wii compatibility, D-pad/motion reports, persistent reconnects, and soak tests remain unverified.
 
-Some games require extension or motion data and will not work with this implementation. The current FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional Wiimote initialization/report handling beyond pairing and a button report.
+Some games require extension or motion data and will not work with this implementation. The current FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional wiimote initialization/report handling beyond pairing and a button report.
 
 ## Build and flash
 
@@ -63,36 +67,97 @@ idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
 
-The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device mode, set the advertised name to `Nintendo RVL-CNT-01`, enable limited discoverability to match the remote's SYNC-mode inquiry behavior, and increase the SDP attribute/padding buffers to publish the descriptor. The limited discoverability option can be changed in `idf.py menuconfig` under **HID Example Configuration**.
+The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device mode, set the advertised name to `Nintendo RVL-CNT-01`, and increase the SDP attribute/padding buffers to publish the descriptor. For the standard Wi-Fi pairing button, espMote starts general/GIAC discovery for 20 seconds. The `/api/sync/limited` endpoint is diagnostic only.
 
 ### Quick iteration
 
-- Work from `firmware/wiimote-hid-test` in the ESPmote repository, not the separate legacy `espWiimote` Arduino project.
+- Work from `firmware/wiimote-hid-test` in the espMote repository, not the separate legacy `espWiimote` Arduino project.
 - For normal source edits, use incremental `idf.py build`; reserve `idf.py fullclean` for stale build/configuration problems.
 - On the tested ESP32, flash at 115200 baud: `idf.py -p /dev/ttyUSB0 -b 115200 flash`. If esptool reports that the stub failed to start, no image was written; resync with `python -m esptool --chip esp32 -p /dev/ttyUSB0 -b 57600 --no-stub read-mac`, then retry the flash.
 - A flash resets the HID connection; press DolphinBar SYNC again. Verify `/api/status` and `/api/camera` at the IP printed by the firmware. The current camera initialization uses the DFRobot default sensitivity profile.
 
 ## Pairing and logs
 
-Set the DolphinBar to mode 4 and press SYNC while the ESP32 is powered and advertising. Expected serial evidence includes:
+**Current Wii U/vWii result (1 November 2026):** with console SYNC first and web SYNC as the remote-side step, HCI recorded connection completion, reverse-host-address PIN success, authentication success, and HID open. In Wii U Menu I pressed Plus on the web controller and opened the Wii application. In vWii I confirmed Plus and Minus page changes and saw the pointer after repositioning the camera/sensor-bar setup. This is a real connection and partial-input result, not full compatibility. D-pad, motion, game-specific controls, and longer stability/reconnect remain unverified. Older freeze/no-request attempts remain historical; their cause is unknown.
+
+The DolphinBar has two separate roles in these tests. I used it only as an IR sensor bar during the vWii pointer test. In a separate test, I pressed DolphinBar SYNC, connected espMote to Dolphin, and confirmed the buttons worked. I did not capture serial instrumentation for that bar test.
+
+I verified a wiimote connects to Wii U slot 1 with the same console procedure. The absence of espMote PIN/authentication/HID logs does not show that the console transmitted nothing: incoming radio inquiries are handled inside espMote's Bluetooth subsystem and are not reported as normal GAP events.
+
+For diagnostics, enable **Trace Bluetooth discovery HCI commands and connection events** under **HID Example Configuration** in local `menuconfig`. This opt-in trace uses project-local linker wrappers for the ESP-IDF 6 Bluedroid transport, forwards packets unchanged, and logs selected HCI TX/RX packets with timestamps. It captures espMote HCI completion status, IAC/CoD/scan writes, and connection requests. PIN values, link keys, and ACL payloads are excluded; dropped or malformed records are reported explicitly. The trace is off by default, does not alter global ESP-IDF sources, and cannot sniff radio inquiry traffic. Native sanitizer tests, firmware build, flash hash verification, and live HCI TX/RX capture passed.
+
+espMote Bluetooth reads report one supported IAC. The previous Limited request submitted LIAC/GIAC together, received success, but read back only LIAC. The previous General path wrote CoD after scan enable and still advertised `0x000504` in the last laptop measurement. espMote Bluetooth command acceptance and cached class readback therefore did not prove on-air parity.
+
+The standard `/api/sync` selects Limited mode; `/api/sync/limited` remains an alias and `/api/sync/general` is the explicit GIAC-only diagnostic. Bluedroid sets the Limited CoD before enabling scans. At boot, a project-local ESP-IDF 6 adapter reads espMote's IAC capacity; for a one-IAC espMote it submits one code at a time, alternates LIAC/GIAC every 1.28 seconds, and rearms inquiry scan around each update. espMote hardware supporting two codes retains the original two-code request. Rotation stops outside discovery and on failure; PIN policy is unchanged. The adapter changes IAC configuration at the stack-helper boundary, while the tracer forwards transport packets unchanged. Native/Python tests, trace-enabled and trace-disabled builds, flash hash verification, and the measured discovery gate pass.
+
+With the trace enabled, `GET /api/bt/controller` queues read-only HCI requests for CoD, current/supported IAC count, and scan enable/activity/type. Its JSON response explicitly means **queued**, not espMote Bluetooth command acceptance or parity. Results appear in `BT_HCI_RX` serial records. The endpoint passed build/flash and live readback checks. Requests use Bluedroid's credit-managed queue and ESP-IDF 6 private headers, not raw VHCI writes, and do not expose credentials.
+
+The current timed profile uses inquiry window/interval `0x0012`/`0x0400` and page window/interval `0x0012`/`0x0800`, preserving the measured R1 paging response. It alternates one supported inquiry access code every 0.64 seconds and is hidden outside the 30-second window. To repeat the local discovery comparison (requires `hcitool` and a laptop BR/EDR adapter):
+
+```bash
+python3 tools/espmote_discovery_test.py http://ESP-MOTE-IP --mode sync --cycles 5
+```
+
+The bounded standard test opens a fresh 30-second SYNC window per cycle and checks both GIAC and LIAC. Five cycles pass only if espMote appears with CoD `0x002504` in all five scans of each code. `--mode general` tests the GIAC-only diagnostic with expected CoD `0x000504`; `--mode limited` tests the Limited alias. `--mode compare` requires both diagnostic modes to pass and at least two cycles. These tests measure discovery only; the one-code adapter does not claim timing identical to a wiimote.
+
+The first rotating implementation passed native/Python/build/flash checks but returned **GIAC 0/5 and LIAC 0/5**. Its IAC writes received status `0x00`; the static General path still returned espMote with CoD `0x000504` in 1/1 scan. Rearming inquiry around each IAC update then passed **GIAC 5/5 and LIAC 5/5, both CoD `0x002504`**. After timeout, espMote answered neither code and HCI readback reported scan enable `0x00`. Native tests, six Python contract/threshold tests, build and flash hash verification pass. This is a discovery result, not a freeze fix or full wiimote emulation.
+
+The initial espMote HID record advertised subclass `0x08` and boot-device support, unlike the captured wiimote. The corrected policy now reads back identically in all 24 HID and all 10 Device ID attributes. Not all report modes or full game behavior are implemented, so exact SDP matching is not full compatibility.
+
+The wiimote reference is now captured: the previous espMote image differs in 11 HID attributes and five Device ID attributes, while the report descriptor matches byte-for-byte. The new SDP policy selects subclass `0x04`, country `0x33`, virtual-cable/boot/normally-connectable false, remote-wake true, SDP-disable false, supervision timeout `0x0c80`, and exact non-NUL-terminated service text. Device ID uses specification `0x0100`, captured device version `0x8500`, and the wiimote protocol/browse/profile lists. These are measured reference values, not guesses about generic HID defaults.
+
+`wiimote_sdp.c` applies this policy with existing ESP-IDF SDP helpers and a project-local HID-builder wrapper, without replacing the HID backend or editing global SDK files. HID/Device ID readiness gates SYNC; failures log and clean up incomplete registration. Native values, eight SDP-comparison tests, discovery checks, build, flash hash verification and exact hardware SDP readback pass.
+
+The prepared EEPROM capture finished in 2.342 seconds: the wiimote and espMote `0x1770` error replies match all 23 bytes (`0xF8`, error 8). The previous espMote sent unsolicited startup `0x20` before core `0x30`; that send is removed. The flashed image now matches the complete captured sequence `0x30, 0x21` byte-for-byte. An explicit `0x15` request still receives the eight-byte `0x20` status report. All 23 focused Python tests, native checks, both trace configurations, and the final 5/5-per-IAC regression pass. A visible Wii U button action and stable initialization still require an optional controlled console test; the previous freeze's cause is unproven.
+
+The subsequent single controlled Wii U attempt did not connect: no incoming HCI connection request, authentication, or HID opening occurred before the 20-second timeout. I confirmed the console stayed responsive on its pairing instructions. Further unchanged console retries are paused; investigate below the already-verified SDP/read-response layer.
+
+The new `tools/inspect_inquiry.py` reads paging fields omitted by ordinary `hcitool` output. A prepared short capture measured wiimote GIAC 5/5 at 2.56 seconds and repetition R1; idle espMote was 0/5 at that duration but visible in a longer inquiry with repetition R0. The next test restores the default page window to target R1, without also changing IAC phase. Run only when Wii U is off and espMote is disconnected; automatic SYNC is explicitly refused while a HID host is using it.
+
+With discovery tracing enabled, the prepared `/api/bt/bonds` endpoint returns bonded-peer addresses/count only. It checks Bluetooth readiness and snapshot stability, logs failures, and neither exposes keys nor removes bonds. It is not present in the previously deployed image until the diagnostic build is safely flashed.
+
+The read-only bond endpoint is now deployed and reports the two known hosts, DolphinBar and Wii U, without exposing or deleting keys. R1 paging now matches the wiimote, but short rotating GIAC results remain below its 5/5 baseline. The current bounded `WIIMOTE_DIAGNOSTIC_GIAC_ONLY` build option holds GIAC with Limited CoD to isolate timing; it defaults off and is marked in the SYNC JSON response. `inspect_inquiry.py` explicitly permits this diagnostic, while the full parity test rejects it. No held-code result should be described as both-code parity.
+
+Normal-button bonded reconnection remains a separate implementation gap: the wiimote actively tries saved hosts after a normal button press, whereas red SYNC stays passive. The SDK bond-list order is not documented connection recency, so a reconnect destination must not be guessed from its first entry.
+
+### Upstream-discovery baseline profile
+
+The verified upstream real-Wii commit is [272d810](https://github.com/pknessness/ESPmote/commit/272d810f1740585d8185a1757ad00b97be4d19b6). Its enabled path uses General discovery at registration and after confirmed disconnect, hides on HID opening, and uses reversed-peer six-byte legacy PINs. These source facts differ from our timed Limited lifecycle; the real-Wii claim is not a Wii U verification.
+
+For my approved lifecycle comparison, build with `-D WIIMOTE_UPSTREAM_DISCOVERY_BASELINE=ON -D WIIMOTE_DIAGNOSTIC_GIAC_ONLY=OFF`. This explicit default-off profile automatically arms connectable General discovery once both SDP records are ready, hides during HID connection, and rearms on confirmed disconnect. Keep Wii U off and DolphinBar disconnected until the recorder is ready. **There is no 20-second timeout while idle.** The UI labels the profile; JSON reports `pairing_profile: upstream-general-continuous` and `window_seconds: 0`.
+
+The normal timed profile is restored with `-D WIIMOTE_UPSTREAM_DISCOVERY_BASELINE=OFF`. Timed/parity tooling rejects the continuous profile by default; the single-code inquiry inspector explicitly opts in. Verified SDP/read behavior and Classic-only transport remain unchanged, so this is not a byte-for-byte reproduction of the full BTDM upstream firmware. The unused upstream 16-zero-PIN fallback is intentionally not copied.
+
+Each new HID session now resets report mode to core `0x30` and clears the previous host's continuous-report flag. A native regression failed before that fix and passes after; the ESP-IDF build passes. This prevents a prior `0x33` session from contaminating initial data, but is not claimed to explain a failure before ACL connection.
+
+To compare two captured records, run `python3 tools/compare_sdp.py WIIMOTE_XML ESPMOTE_XML --uuid 0x1124` for HID or `--uuid 0x1200` for Device ID. It checks all values and types, including descriptor bytes and service text; only the dynamic handle is excluded. Trailing `sdptool` search errors are reported separately from complete records.
+
+Expected serial evidence includes:
 
 ```text
-READY identity=Nintendo RVL-CNT-01; awaiting external DolphinBar SYNC
-legacy PIN request
-legacy PIN reply result=ESP_OK
-authentication status=0 peer=HJZ WiiMote Convertor
+READY identity=Nintendo RVL-CNT-01; use web SYNC to open a 30-second pairing window
+Nintendo Device ID SDP record ready: handle=...
+Controller supported inquiry access codes=1
+SYNC_PAIRING_WINDOW_OPEN seconds=30 pairing=bonded discovery=limited inquiry_window=0x0012 inquiry_interval=0x0400 page_window=0x0012 page_interval=0x0800
+SYNC inquiry code=GIAC count=1
+SYNC inquiry code=LIAC count=1
+legacy PIN request min16=0
+legacy PIN reply result=ESP_OK mode=SYNC pin=reverse-host-address
+authentication status=0 peer=<host>
 WIIREMOTE_HID_CONNECTED peer=...
 report mode=0x30
 LED state=...
 ```
 
-The `CoD=0x002504` readback confirms the Limited Discoverable service bit is set. A general Bluetooth inquiry may not show this device because it answers the limited inquiry access code, as intended for Wii Remote SYNC behavior.
+For SYNC bonding, the legacy PIN is the host's Bluetooth address in reverse byte order. `min_16_digit` is only a minimum-PIN-length flag, not the pairing-mode selector. Requests requiring 16 digits are rejected because the wiimote path uses a six-byte address PIN. Standard Limited SYNC targets CoD `0x002504`; the General diagnostic uses `0x000504`. The previous after-scan CoD override and arbitrary waits have been removed. On-air acceptance of the new adapter and stable Wii U behavior remain unverified.
+
+wiimotes also have a separate temporary 1+2 guest-pairing mode with different PIN behavior. That non-persistent guest mode is not implemented here; Bluedroid's successful Classic authentication stores link keys. The web page's 1+2 button is gameplay input only.
 
 ## Protocol research and acknowledgements
 
 The firmware protocol behavior was implemented in our own code after consulting:
 
-- [WiiBrew: Wiimote](https://wiibrew.org/wiki/Wiimote) for community-documented reports, memory spaces and extension initialization.
+- [WiiBrew: wiimote](https://wiibrew.org/wiki/Wiimote) for community-documented reports, memory spaces and extension initialization.
 - [WiiUse](https://github.com/wiiuse/wiiuse), especially `src/wiiuse.h`, `src/wiiuse_internal.h`, and `src/io.c`, for button masks, report identifiers, memory commands and the common initialization handshake. WiiUse is a GPL-3.0-or-later project; no WiiUse library or source files are linked/copied into this firmware.
 - [Dolphin Emulator](https://github.com/dolphin-emu/dolphin), especially `Source/Core/Core/HW/WiimoteCommon/WiimoteConstants.h`, `WiimoteReport.h`, `Source/Core/Core/HW/WiimoteReal/WiimoteReal.cpp`, and `Source/Core/Core/HW/WiimoteEmu/EmuSubroutines.cpp`, for packet structure, error codes and memory read/write behavior. Dolphin is GPL-2.0-or-later; no Dolphin source files are linked/copied into this firmware.
 
@@ -114,4 +179,4 @@ The IMU branch obtains BNO08x support from `rinku404/bno085` v1.2.0 through ESP-
 - `main/imu_service.c` initializes the BNO08x and publishes rotation-vector orientation.
 - `main/wiimote_descriptor.c` contains the HID report descriptor.
 - `main/wiimote_identity.c` contains Bluetooth address formatting.
-- Pairing PIN handling is currently tuned for the tested DolphinBar SYNC flow. Treat 1+2 pairing and console interoperability as unverified.
+- `main/wiimote_app.c` publishes a primary SDP Device ID record with Nintendo VID/PID `057e:0306`, starts hidden, and opens a 30-second Limited window from web SYNC. `main/wiimote_discovery.c` respects espMote's IAC capacity and rearms inquiry while alternating codes. The legacy PIN uses the reversed host address without inferring pairing mode from `min_16_digit`. Standard five-cycle GIAC/LIAC inquiry passed 5/5 with CoD `0x002504`; a Wii U/vWii connection, Plus/Minus input, and pointer visibility have since been observed. Full wiimote feature/game parity and reconnect stability remain unverified. Temporary 1+2 guest pairing is unsupported.
