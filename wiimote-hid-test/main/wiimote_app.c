@@ -212,6 +212,7 @@ static void save_last_host(const esp_bd_addr_t host)
     s_reconnect_delay_ms = WIIMOTE_RECONNECT_INITIAL_DELAY_MS;
     bool persist = !s_last_host_persisted;
     portEXIT_CRITICAL(&s_reconnect_mux);
+    wiimote_web_set_last_host(host);
     if (!persist) return;
 
     nvs_handle_t nvs;
@@ -272,6 +273,7 @@ static void load_last_host(void)
     s_last_host_valid = true;
     s_last_host_persisted = true;
     portEXIT_CRITICAL(&s_reconnect_mux);
+    wiimote_web_set_last_host(host);
     ESP_LOGI(TAG, "Loaded saved HID host for automatic reconnect");
 }
 
@@ -284,6 +286,8 @@ static void clear_last_host(void)
     s_reconnect_paused = false;
     s_reconnect_delay_ms = WIIMOTE_RECONNECT_INITIAL_DELAY_MS;
     portEXIT_CRITICAL(&s_reconnect_mux);
+    wiimote_web_set_last_host(NULL);
+    wiimote_web_set_reconnect_pending(false);
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("wiimote", NVS_READWRITE, &nvs);
@@ -307,22 +311,35 @@ static void clear_last_host(void)
 
 static void stop_hid_reconnect_timer(void)
 {
-    if (!s_reconnect_timer || !esp_timer_is_active(s_reconnect_timer)) return;
+    if (!s_reconnect_timer || !esp_timer_is_active(s_reconnect_timer)) {
+        wiimote_web_set_reconnect_pending(false);
+        return;
+    }
 
     esp_err_t err = esp_timer_stop(s_reconnect_timer);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Could not stop HID reconnect timer: %s", esp_err_to_name(err));
+        wiimote_web_set_reconnect_pending(esp_timer_is_active(s_reconnect_timer));
+        return;
     }
+    wiimote_web_set_reconnect_pending(false);
 }
 
 static void schedule_hid_reconnect(const char *reason)
 {
-    if (wiimote_state_is_connected()) return;
-    if (!s_reconnect_timer) {
-        ESP_LOGE(TAG, "Cannot schedule HID reconnect before timer initialization");
+    if (wiimote_state_is_connected()) {
+        wiimote_web_set_reconnect_pending(false);
         return;
     }
-    if (esp_timer_is_active(s_reconnect_timer)) return;
+    if (!s_reconnect_timer) {
+        ESP_LOGE(TAG, "Cannot schedule HID reconnect before timer initialization");
+        wiimote_web_set_reconnect_pending(false);
+        return;
+    }
+    if (esp_timer_is_active(s_reconnect_timer)) {
+        wiimote_web_set_reconnect_pending(true);
+        return;
+    }
 
     portENTER_CRITICAL(&s_reconnect_mux);
     bool reconnect_paused = s_reconnect_paused;
@@ -330,17 +347,22 @@ static void schedule_hid_reconnect(const char *reason)
     portEXIT_CRITICAL(&s_reconnect_mux);
     if (reconnect_paused) {
         ESP_LOGW(TAG, "HID reconnect is paused (%s)", reason);
+        wiimote_web_set_reconnect_pending(false);
         return;
     }
 
     esp_bd_addr_t host;
     if (!copy_last_host(host)) {
         ESP_LOGI(TAG, "RECONNECT_NOT_ARMED reason=%s last_host=unknown", reason);
+        wiimote_web_set_reconnect_pending(false);
         return;
     }
     bool bonded = false;
     esp_err_t err = is_bonded_peer(host, &bonded);
-    if (err != ESP_OK) return;
+    if (err != ESP_OK) {
+        wiimote_web_set_reconnect_pending(false);
+        return;
+    }
     if (!bonded) {
         ESP_LOGW(TAG, "Saved HID host is no longer bonded; clearing reconnect target");
         clear_last_host();
@@ -359,8 +381,10 @@ static void schedule_hid_reconnect(const char *reason)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Could not schedule HID reconnect after %s: %s",
                  reason, esp_err_to_name(err));
+        wiimote_web_set_reconnect_pending(false);
         return;
     }
+    wiimote_web_set_reconnect_pending(true);
     ESP_LOGI(TAG, "HID_RECONNECT_SCHEDULED reason=%s delay_ms=%u",
              reason, (unsigned)delay_ms);
 }

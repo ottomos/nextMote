@@ -38,6 +38,7 @@ static SemaphoreHandle_t s_button_lock;
 static uint16_t s_button_mask;
 static portMUX_TYPE s_camera_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_sync_status_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_link_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static ir_camera_state_t s_camera_state;
 static wiimote_web_button_callback_t s_button_callback;
 static wiimote_web_sync_callback_t s_sync_callback;
@@ -48,6 +49,8 @@ static httpd_handle_t s_http_server;
 static unsigned s_retry_count;
 static bool s_hid_connected;
 static bool s_sync_window_active;
+static char s_last_host_address[18];
+static bool s_reconnect_pending;
 
 static const struct {
     const char *name;
@@ -187,9 +190,13 @@ static const char INDEX_HTML[] =
     "catch(e){buttonStatusEl.textContent='Pair failed: '+e.message;syncButton.textContent='Pair'}"
     "finally{syncRequestPending=false;syncButton.disabled=pairingPending}}"
     "syncButton.addEventListener('click',requestSync);"
-    "function updateStatus(s){statusEl.textContent=s.wifi?"
-    "'Wi-Fi connected · '+s.ip+(s.connected?' · HID connected':' · Bluetooth ready for SYNC'):"
-    "'Wi-Fi not connected yet';statusEl.dataset.connected=s.connected?'1':'0';"
+    "function updateStatus(s){const host=s.last_host?' '+s.last_host:'';"
+    "const link=s.connected?'HID connected'+(s.last_host?' · '+s.last_host:''):"
+    "s.sync_window?'Pairing window open':"
+    "s.reconnecting?'Trying saved host'+host:"
+    "s.last_host?'Disconnected · saved host'+host:'Bluetooth ready for Pair';"
+    "statusEl.textContent=s.wifi?'Wi-Fi connected · '+s.ip+' · '+link:'Wi-Fi not connected yet';"
+    "statusEl.dataset.connected=s.connected?'1':'0';"
     "syncButton.disabled=syncRequestPending||pairingPending;"
     "if(pairingPending&&!s.connected)pairingSawDisconnect=true;"
     "if(pairingPending&&pairingSawDisconnect&&s.connected){"
@@ -264,6 +271,13 @@ static bool sync_window_snapshot(void)
 static esp_err_t status_handler(httpd_req_t *req)
 {
     char ip[16] = "0.0.0.0";
+    char last_host[sizeof(s_last_host_address)];
+    bool reconnect_pending;
+    portENTER_CRITICAL(&s_link_status_mux);
+    memcpy(last_host, s_last_host_address, sizeof(last_host));
+    reconnect_pending = s_reconnect_pending;
+    portEXIT_CRITICAL(&s_link_status_mux);
+
     esp_netif_ip_info_t info = {0};
     if (s_station && esp_netif_get_ip_info(s_station, &info) == ESP_OK) {
         snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
@@ -272,10 +286,11 @@ static esp_err_t status_handler(httpd_req_t *req)
     bool hid_connected = hid_connected_snapshot();
     bool sync_window_active = sync_window_snapshot();
     int length = snprintf(response, sizeof(response),
-             "{\"wifi\":%s,\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\"}",
+             "{\"wifi\":%s,\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s}",
              (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) ? "true" : "false",
              hid_connected ? "true" : "false",
-             sync_window_active ? "true" : "false", ip, PAIRING_PROFILE);
+             sync_window_active ? "true" : "false", ip, PAIRING_PROFILE, last_host,
+             reconnect_pending ? "true" : "false");
     if (length < 0 || (size_t)length >= sizeof(response)) {
         ESP_LOGE(TAG, "Status response formatting failed");
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -766,6 +781,33 @@ void wiimote_web_set_hid_connected(bool connected)
     if (changed) ESP_LOGI(TAG, "Bluetooth HID %s", connected ? "connected" : "disconnected");
     if (connected) wiimote_web_set_sync_window(false);
     if (!connected && changed && s_button_callback) s_button_callback(0);
+}
+
+void wiimote_web_set_last_host(const uint8_t address[6])
+{
+    char formatted[sizeof(s_last_host_address)] = {0};
+    if (address != NULL) {
+        int length = snprintf(formatted, sizeof(formatted),
+                              "%02x:%02x:%02x:%02x:%02x:%02x",
+                              (unsigned)address[0], (unsigned)address[1],
+                              (unsigned)address[2], (unsigned)address[3],
+                              (unsigned)address[4], (unsigned)address[5]);
+        if (length < 0 || (size_t)length >= sizeof(formatted)) {
+            ESP_LOGE(TAG, "Last-host address formatting failed");
+            return;
+        }
+    }
+
+    portENTER_CRITICAL(&s_link_status_mux);
+    memcpy(s_last_host_address, formatted, sizeof(s_last_host_address));
+    portEXIT_CRITICAL(&s_link_status_mux);
+}
+
+void wiimote_web_set_reconnect_pending(bool pending)
+{
+    portENTER_CRITICAL(&s_link_status_mux);
+    s_reconnect_pending = pending;
+    portEXIT_CRITICAL(&s_link_status_mux);
 }
 
 void wiimote_web_set_sync_callback(wiimote_web_sync_callback_t callback)

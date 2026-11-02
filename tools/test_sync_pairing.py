@@ -37,6 +37,16 @@ if '.uri = "/api/sync/general", .method = HTTP_POST, .handler = sync_general_han
     raise SystemExit("General-discovery diagnostic endpoint is not registered")
 if "sync_window" not in web:
     raise SystemExit("Pairing-window state is not exposed to the UI")
+if "last_host" not in web or "reconnecting" not in web:
+    raise SystemExit("Status API does not expose the saved host and reconnect state")
+if "Trying saved host" not in web:
+    raise SystemExit("Status line does not identify an automatic reconnect attempt")
+if "wiimote_web_set_last_host(host)" not in app or \
+   "wiimote_web_set_last_host(NULL)" not in app:
+    raise SystemExit("Saved-host status is not updated and cleared with reconnect state")
+if "wiimote_web_set_reconnect_pending(true)" not in app or \
+   "wiimote_web_set_reconnect_pending(false)" not in app:
+    raise SystemExit("Status line is not synchronized with reconnect scheduling")
 if "wiimote_web_set_sync_callback(request_sync_with_host_switch)" not in app:
     raise SystemExit("Pair does not route through the saved-host switch procedure")
 if "return queue_virtual_cable_unplug(true, general_discoverable)" not in app:
@@ -129,4 +139,4 @@ if "WIIMOTE_SYNTHETIC_BATTERY_HALF 0x80U" not in reports or \
 if "esp_err_t send_err = s_button_callback(new_state)" not in web:
     raise SystemExit("Web button requests do not surface HID report-queue failures")
 
-print("Web Pair/host switch, bonded PIN, button reports, status battery, Device ID SDP, and discovery checks passed")
+print("Web Pair/host switch, reconnect status, bonded PIN, button reports, status battery, Device ID SDP, and discovery checks passed")
