@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Wii Remote SYNC window wiring and bonded-PIN selection."""
+"""Check Wii Remote Pair, host-switch, bonded-PIN, and status wiring."""
 
 from pathlib import Path
 import re
@@ -8,6 +8,7 @@ root = Path(__file__).parents[1] / "wiimote-hid-test/main"
 header = (root / "wiimote_web.h").read_text(encoding="utf-8")
 web = (root / "wiimote_web.c").read_text(encoding="utf-8")
 app = (root / "wiimote_app.c").read_text(encoding="utf-8")
+reports = (root / "wiimote_reports.c").read_text(encoding="utf-8")
 defaults = (root.parent / "sdkconfig.defaults").read_text(encoding="utf-8")
 cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
 
@@ -19,8 +20,15 @@ if "esp_timer_start_once(s_sync_pairing_timer" not in app:
 if "WIIMOTE_SYNC_WINDOW_SECONDS * 1000000ULL" not in app:
     raise SystemExit("SYNC timer does not use the documented window length")
 
-if "id='sync-button'" not in web or "fetch('/api/sync',{method:'POST'})" not in web:
-    raise SystemExit("Web SYNC button is not wired to the pairing endpoint")
+if "<button id='sync-button' type='button' class='sync-button'>Pair</button>" not in web or \
+   "fetch('/api/sync',{method:'POST'})" not in web:
+    raise SystemExit("Single Pair button is not wired to the pairing endpoint")
+if "syncButton.disabled=syncRequestPending||pairingPending;" not in web:
+    raise SystemExit("Pair button is disabled by the connected status")
+if "syncButton.textContent=left?'Pair · '+left+'s':'Pair';" not in web:
+    raise SystemExit("Pair button does not display the active pairing countdown")
+if "id='rearm-button'" in web or "id='rearm-explanation'" in web or "syncStatusEl" in web:
+    raise SystemExit("Pairing panel still has extra controls or text")
 if '.uri = "/api/sync", .method = HTTP_POST, .handler = sync_limited_handler' not in web:
     raise SystemExit("Standard SYNC does not select Wii Remote limited discovery")
 if '.uri = "/api/sync/limited", .method = HTTP_POST, .handler = sync_limited_handler' not in web:
@@ -29,6 +37,33 @@ if '.uri = "/api/sync/general", .method = HTTP_POST, .handler = sync_general_han
     raise SystemExit("General-discovery diagnostic endpoint is not registered")
 if "sync_window" not in web:
     raise SystemExit("Pairing-window state is not exposed to the UI")
+if "wiimote_web_set_sync_callback(request_sync_with_host_switch)" not in app:
+    raise SystemExit("Pair does not route through the saved-host switch procedure")
+if "return queue_virtual_cable_unplug(true, general_discoverable)" not in app:
+    raise SystemExit("Pair does not release the saved virtual cable before discovery")
+if "SYNC window opened after previous host virtual cable was released" not in app:
+    raise SystemExit("Pair does not wait for virtual-cable release before discovery")
+sync_handler = web.split("static esp_err_t sync_handler", 1)[1].split(
+    "static esp_err_t sync_general_handler", 1
+)[0]
+if "hid_connected_snapshot()" in sync_handler:
+    raise SystemExit("Pair button cannot switch hosts while HID is connected")
+if "WIIMOTE_RECONNECT_INCOMING_GRACE_MS 10000U" not in app:
+    raise SystemExit("Mode handoff does not allow an incoming reconnect grace period")
+close_event = app.split("case ESP_HIDD_CLOSE_EVT:", 1)[1].split(
+    "case ESP_HIDD_GET_REPORT_EVT:", 1
+)[0]
+if "s_reconnect_delay_ms = WIIMOTE_RECONNECT_INCOMING_GRACE_MS" not in close_event:
+    raise SystemExit("HID close still triggers the outgoing reconnect before incoming hosts can respond")
+unplug_handler = web.split("static esp_err_t virtual_cable_unplug_handler", 1)[1].split(
+    "static esp_err_t sync_rearm_handler", 1
+)[0]
+unplug_callback = app.split("static esp_err_t request_virtual_cable_unplug", 1)[1].split(
+    "\n#endif", 1
+)[0]
+if "hid_connected_snapshot()" in unplug_handler or \
+   "if (wiimote_state_is_connected())" in unplug_callback:
+    raise SystemExit("Virtual-cable unplug cannot release an active HID connection")
 
 if "param->pin_req.bda[ESP_BD_ADDR_LEN - 1 - i]" not in app:
     raise SystemExit("Bonded SYNC PIN does not reverse the host address")
@@ -36,8 +71,10 @@ if "if (param->pin_req.min_16_digit)" not in app:
     raise SystemExit("Minimum PIN length is not checked independently")
 if "Using local ESP32 BT address PIN for SYNC pairing" in app:
     raise SystemExit("Minimum PIN length is still being treated as pairing mode")
-if "outside the web SYNC pairing window" not in app:
-    raise SystemExit("PIN requests are not limited to the explicit SYNC window")
+if "if (!sync_active)" not in app or \
+   "is_bonded_peer(param->pin_req.bda, &bonded)" not in app or \
+   "Rejecting PIN request outside SYNC from an unverified peer" not in app:
+    raise SystemExit("PIN requests outside SYNC are not limited to previously bonded hosts")
 if "CONFIG_BT_SDP_COMMON_ENABLED=y" not in defaults:
     raise SystemExit("Common SDP support is not enabled")
 if "s_app.subclass = ESP_HID_CLASS_JOS;" not in app:
@@ -86,5 +123,10 @@ if "ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE" not in app:
     raise SystemExit("SYNC restart does not rearm inquiry before programming its initial IAC")
 if "general_discoverable ? \"general-diagnostic\" : \"limited\"" not in app:
     raise SystemExit("Pairing logs do not identify the selected discovery mode")
+if "WIIMOTE_SYNTHETIC_BATTERY_HALF 0x80U" not in reports or \
+   "WIIMOTE_SYNTHETIC_BATTERY_HALF," not in reports:
+    raise SystemExit("Status report does not advertise the synthetic half-battery level")
+if "esp_err_t send_err = s_button_callback(new_state)" not in web:
+    raise SystemExit("Web button requests do not surface HID report-queue failures")
 
-print("Web SYNC, bonded PIN, Device ID SDP, inquiry/R1 paging, and discovery lifecycle checks passed")
+print("Web Pair/host switch, bonded PIN, button reports, status battery, Device ID SDP, and discovery checks passed")

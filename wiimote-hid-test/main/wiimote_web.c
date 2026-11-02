@@ -28,15 +28,8 @@
 #define MAX_HTTP_BODY 96
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
 #define PAIRING_PROFILE "upstream-general-continuous"
-#define SYNC_BUTTON_LABEL "SYNC - upstream General baseline"
-#define PAIRING_EXPLANATION "Upstream discovery baseline: espMote is General discoverable while idle. " \
-                            "There is no timed deadline in this diagnostic profile. " \
-                            "The normal timed profile remains available in a baseline-disabled build."
 #else
 #define PAIRING_PROFILE "timed"
-#define SYNC_BUTTON_LABEL "SYNC · 30 seconds"
-#define PAIRING_EXPLANATION "Press SYNC on the console first. When it asks for a remote, press this button; " \
-                            "espMote will be discoverable for 30 seconds."
 #endif
 
 static const char *TAG = "wiimote_web";
@@ -48,6 +41,8 @@ static portMUX_TYPE s_sync_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static ir_camera_state_t s_camera_state;
 static wiimote_web_button_callback_t s_button_callback;
 static wiimote_web_sync_callback_t s_sync_callback;
+static wiimote_web_virtual_cable_unplug_callback_t s_virtual_cable_unplug_callback;
+static wiimote_web_sync_rearm_callback_t s_sync_rearm_callback;
 static esp_netif_t *s_station;
 static httpd_handle_t s_http_server;
 static unsigned s_retry_count;
@@ -122,11 +117,7 @@ static const char INDEX_HTML[] =
     "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
     "<div id='status'>Connecting to ESP32…</div><div id='button-status' aria-live='polite'></div>"
     "<section class='pairing-panel' aria-label='Bluetooth pairing'>"
-    "<h2>Pair with Wii / Wii U</h2>"
-    "<p>" PAIRING_EXPLANATION " "
-    "The 1 + 2 control below is for gameplay, not pairing.</p>"
-    "<button id='sync-button' type='button' class='sync-button'>" SYNC_BUTTON_LABEL "</button>"
-    "<p id='sync-status' aria-live='polite'>Bluetooth pairing is off. Press SYNC to open a pairing window.</p>"
+    "<button id='sync-button' type='button' class='sync-button'>Pair</button>"
     "</section>"
     "<section class='remote' aria-label='Wii Remote'>"
     "<div class='dpad'><button class='up' data-button='Up'>▲</button>"
@@ -156,8 +147,8 @@ static const char INDEX_HTML[] =
     "</div><div class='imu-cube-wrap'><div id='imu-cube' aria-label='IMU orientation box'></div>"
     "</div></div></section></main><script>"
     "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
-    "const syncButton=document.querySelector('#sync-button');const syncStatusEl=document.querySelector('#sync-status');"
-    "let syncRequestPending=false,syncCountdownTimer=null,syncRequestError=false;"
+    "const syncButton=document.querySelector('#sync-button');"
+    "let syncRequestPending=false,pairingPending=false,pairingSawDisconnect=false,syncCountdownTimer=null;"
     "let held=new Set(),queue=Promise.resolve();"
     "const cameraStatusEl=document.querySelector('#camera-status');"
     "const cameraTracker=document.querySelector('#camera-tracker');const cameraDots=[];"
@@ -179,38 +170,31 @@ static const char INDEX_HTML[] =
     "b.addEventListener('contextmenu',e=>e.preventDefault())});"
     "window.addEventListener('blur',()=>{for(const b of document.querySelectorAll('.pressed'))release(b)});"
     "document.addEventListener('visibilitychange',()=>{if(document.hidden){for(const b of document.querySelectorAll('.pressed'))release(b)}});"
-    "async function requestSync(){if(syncRequestPending||statusEl.dataset.connected==='1')return;"
-    "syncRequestPending=true;syncRequestError=false;syncButton.disabled=true;"
+    "async function requestSync(){if(syncRequestPending||pairingPending)return;"
+    "syncRequestPending=true;syncButton.disabled=true;buttonStatusEl.textContent='';"
     "try{const r=await fetch('/api/sync',{method:'POST'});"
     "if(!r.ok)throw Error(await r.text());const d=await r.json();"
     "if(d.pairing_profile==='upstream-general-continuous'){"
-    "if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
-    "syncStatusEl.textContent='Upstream General baseline active - continuous while idle';return;}"
+    "syncButton.textContent='Pair';return;}"
+    "pairingPending=true;pairingSawDisconnect=statusEl.dataset.connected!=='1';"
     "const expires=Date.now()+d.window_seconds*1000;"
     "if(syncCountdownTimer)clearInterval(syncCountdownTimer);"
     "const refreshSync=()=>{const left=Math.max(0,Math.ceil((expires-Date.now())/1000));"
-    "syncStatusEl.textContent=left?'ESPmote SYNC active · '+left+' s remaining':"
-    "'SYNC window expired · press again to retry';"
-    "if(!left){clearInterval(syncCountdownTimer);syncCountdownTimer=null}};"
+    "syncButton.textContent=left?'Pair · '+left+'s':'Pair';"
+    "if(!left){clearInterval(syncCountdownTimer);syncCountdownTimer=null;"
+    "pairingPending=false;pairingSawDisconnect=false;syncButton.disabled=false}};"
     "refreshSync();syncCountdownTimer=setInterval(refreshSync,250)}"
-    "catch(e){syncRequestError=true;syncStatusEl.textContent='SYNC failed: '+e.message}"
-    "finally{syncRequestPending=false;syncButton.disabled=statusEl.dataset.connected==='1'}}"
+    "catch(e){buttonStatusEl.textContent='Pair failed: '+e.message;syncButton.textContent='Pair'}"
+    "finally{syncRequestPending=false;syncButton.disabled=pairingPending}}"
     "syncButton.addEventListener('click',requestSync);"
     "function updateStatus(s){statusEl.textContent=s.wifi?"
     "'Wi-Fi connected · '+s.ip+(s.connected?' · HID connected':' · Bluetooth ready for SYNC'):"
     "'Wi-Fi not connected yet';statusEl.dataset.connected=s.connected?'1':'0';"
-    "syncButton.disabled=s.connected||syncRequestPending;"
-    "if(s.connected){if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
-    "syncStatusEl.textContent='Bluetooth HID connected'}"
-    "else if(s.pairing_profile==='upstream-general-continuous'&&s.sync_window){"
+    "syncButton.disabled=syncRequestPending||pairingPending;"
+    "if(pairingPending&&!s.connected)pairingSawDisconnect=true;"
+    "if(pairingPending&&pairingSawDisconnect&&s.connected){"
     "if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
-    "syncStatusEl.textContent='Upstream General baseline active - continuous while idle'}"
-    "else if(s.sync_window&&!syncCountdownTimer)syncStatusEl.textContent="
-    "'ESPmote SYNC pairing window is active';"
-    "else if(!s.sync_window&&syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null;"
-    "syncStatusEl.textContent='SYNC pairing window closed'}"
-    "else if(!s.sync_window&&!syncCountdownTimer&&!syncRequestError)syncStatusEl.textContent="
-    "'Bluetooth pairing is off. Press SYNC to open a pairing window.';"
+    "pairingPending=false;pairingSawDisconnect=false;syncButton.textContent='Pair';syncButton.disabled=false}"
     "if(!s.connected)for(const b of document.querySelectorAll('.pressed'))release(b)}"
     "async function refreshStatus(){try{const r=await fetch('/api/status',{cache:'no-store'});"
     "if(!r.ok)throw Error('HTTP '+r.status);updateStatus(await r.json())}"
@@ -398,8 +382,8 @@ static esp_err_t button_handler(httpd_req_t *req)
     xSemaphoreTake(s_button_lock, portMAX_DELAY);
     if (!s_hid_connected) {
         xSemaphoreGive(s_button_lock);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Bluetooth HID is not connected");
-        return ESP_FAIL;
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Bluetooth HID is not connected");
     }
     bool pressed = pressed_text[0] == '1';
     if (pressed) s_button_mask |= mask;
@@ -407,7 +391,17 @@ static esp_err_t button_handler(httpd_req_t *req)
     uint16_t new_state = s_button_mask;
     xSemaphoreGive(s_button_lock);
 
-    if (s_button_callback) s_button_callback(new_state);
+    if (!s_button_callback) {
+        ESP_LOGE(TAG, "Web button callback is unavailable");
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "HID button callback is unavailable");
+    }
+    esp_err_t send_err = s_button_callback(new_state);
+    if (send_err != ESP_OK) {
+        ESP_LOGE(TAG, "HID button report was not queued: %s", esp_err_to_name(send_err));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, esp_err_to_name(send_err));
+    }
     ESP_LOGI(TAG, "%s %s (mask=0x%04x state=0x%04x)", pressed ? "Press" : "Release", name, mask, new_state);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -421,10 +415,6 @@ static esp_err_t sync_handler(httpd_req_t *req, bool general_discoverable)
     if (req->content_len != 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "SYNC request must not have a body");
         return ESP_FAIL;
-    }
-    if (hid_connected_snapshot()) {
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "Bluetooth HID is already connected");
     }
     if (!s_sync_callback) {
         httpd_resp_set_status(req, "503 Service Unavailable");
@@ -552,7 +542,67 @@ cleanup:
     free(body);
     return result;
 }
+
+static esp_err_t virtual_cable_unplug_handler(httpd_req_t *req)
+{
+    if (req->content_len != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Virtual-cable unplug request must not have a body");
+    }
+    if (!s_virtual_cable_unplug_callback) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Virtual-cable unplug callback is unavailable");
+    }
+
+    esp_err_t err = s_virtual_cable_unplug_callback();
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Bluetooth is busy or not ready for virtual-cable unplug");
+    }
+    if (err == ESP_ERR_NOT_FOUND) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "No saved bonded HID host is available to unplug");
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Virtual-cable unplug request failed: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, esp_err_to_name(err));
+    }
+
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"queued\":true}");
+}
 #endif
+
+static esp_err_t sync_rearm_handler(httpd_req_t *req)
+{
+    if (req->content_len != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "SYNC rearm request must not have a body");
+    }
+    if (!s_sync_rearm_callback) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "SYNC rearm callback is unavailable");
+    }
+
+    esp_err_t err = s_sync_rearm_callback();
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Bluetooth is not ready to disconnect and reopen SYNC");
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SYNC rearm request failed: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, esp_err_to_name(err));
+    }
+
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"queued\":true,\"action\":\"disconnect_then_sync\"}");
+}
 
 static const httpd_uri_t s_index_uri = {
     .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL,
@@ -585,12 +635,20 @@ static const httpd_uri_t s_controller_readback_uri = {
 static const httpd_uri_t s_bond_snapshot_uri = {
     .uri = "/api/bt/bonds", .method = HTTP_GET, .handler = bond_snapshot_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_virtual_cable_unplug_uri = {
+    .uri = "/api/bt/virtual-cable-unplug", .method = HTTP_POST,
+    .handler = virtual_cable_unplug_handler, .user_ctx = NULL,
+};
 #endif
+static const httpd_uri_t s_sync_rearm_uri = {
+    .uri = "/api/bt/rearm-sync", .method = HTTP_POST,
+    .handler = sync_rearm_handler, .user_ctx = NULL,
+};
 
 static void start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 12;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -608,7 +666,9 @@ static void start_http_server(void)
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_controller_readback_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_bond_snapshot_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_virtual_cable_unplug_uri));
 #endif
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_rearm_uri));
 
     esp_netif_ip_info_t info = {0};
     ESP_ERROR_CHECK(esp_netif_get_ip_info(s_station, &info));
@@ -711,6 +771,17 @@ void wiimote_web_set_hid_connected(bool connected)
 void wiimote_web_set_sync_callback(wiimote_web_sync_callback_t callback)
 {
     s_sync_callback = callback;
+}
+
+void wiimote_web_set_virtual_cable_unplug_callback(
+    wiimote_web_virtual_cable_unplug_callback_t callback)
+{
+    s_virtual_cable_unplug_callback = callback;
+}
+
+void wiimote_web_set_sync_rearm_callback(wiimote_web_sync_rearm_callback_t callback)
+{
+    s_sync_rearm_callback = callback;
 }
 
 void wiimote_web_set_sync_window(bool active)

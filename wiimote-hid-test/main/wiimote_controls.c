@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "esp_hidd_api.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -22,14 +23,15 @@ static const char *TAG = "wiimote_controls";
 static bool s_web_control_active;
 static portMUX_TYPE s_controls_mux = portMUX_INITIALIZER_UNLOCKED;
 
-static void set_web_button_state(uint16_t button_mask)
+static esp_err_t set_web_button_state(uint16_t button_mask)
 {
     portENTER_CRITICAL(&s_controls_mux);
     s_web_control_active = true;
     portEXIT_CRITICAL(&s_controls_mux);
 
-    if (wiimote_state_set_button_mask(button_mask))
-        (void)wiimote_reports_send_current();
+    if (!wiimote_state_set_button_mask(button_mask)) return ESP_ERR_INVALID_STATE;
+    if (wiimote_reports_send_current() != ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS) return ESP_FAIL;
+    return ESP_OK;
 }
 
 void wiimote_controls_init(void)

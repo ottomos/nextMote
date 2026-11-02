@@ -14,6 +14,8 @@
 #include "wiimote_state.h"
 
 static const char *TAG = "wiimote_reports";
+/* Temporary midpoint of the 0x00-0xff scale until battery voltage is measured. */
+#define WIIMOTE_SYNTHETIC_BATTERY_HALF 0x80U
 static const uint8_t s_neutral_accelerometer[3] = {0x80, 0x80, 0x9a};
 static ir_camera_state_t s_camera_state;
 static portMUX_TYPE s_camera_state_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -141,7 +143,7 @@ uint8_t wiimote_reports_send_status(void)
                   ((state.ir_logic_enabled && state.ir_sensor_enabled) ? 0x08U : 0U)),
         0,
         0,
-        0xc0,
+        WIIMOTE_SYNTHETIC_BATTERY_HALF,
     };
     return wiimote_reports_send_input(WIIMOTE_REPORT_STATUS, payload, sizeof(payload));
 }
