@@ -55,6 +55,10 @@ static bool s_reconnect_paused;
 static bool s_sync_after_disconnect_pending;
 static bool s_sync_after_unplug_pending;
 static bool s_sync_after_unplug_general;
+static bool s_sync_after_unplug_disconnect_pending;
+static bool s_sync_after_bond_remove_pending;
+static bool s_sync_after_bond_remove_general;
+static esp_bd_addr_t s_sync_after_bond_remove_host;
 #endif
 static uint32_t s_reconnect_delay_ms = WIIMOTE_RECONNECT_INITIAL_DELAY_MS;
 static portMUX_TYPE s_device_id_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -580,8 +584,11 @@ static esp_err_t queue_virtual_cable_unplug(bool open_sync_after,
 
     stop_hid_reconnect_timer();
     portENTER_CRITICAL(&s_reconnect_mux);
-    if (open_sync_after && s_sync_after_unplug_pending) {
+    if (open_sync_after &&
+        (s_sync_after_unplug_pending || s_sync_after_disconnect_pending ||
+         s_sync_after_bond_remove_pending)) {
         portEXIT_CRITICAL(&s_reconnect_mux);
+        ESP_LOGW(TAG, "Pair request rejected while another host transition is pending");
         return ESP_ERR_INVALID_STATE;
     }
     s_reconnect_paused = true;
@@ -600,6 +607,7 @@ static esp_err_t queue_virtual_cable_unplug(bool open_sync_after,
         if (open_sync_after) {
             s_sync_after_unplug_pending = false;
             s_sync_after_unplug_general = false;
+            s_sync_after_unplug_disconnect_pending = false;
         }
         portEXIT_CRITICAL(&s_reconnect_mux);
         ESP_LOGE(TAG, "Could not queue virtual-cable unplug: %s", esp_err_to_name(err));
@@ -631,6 +639,39 @@ static esp_err_t request_sync_with_host_switch(bool general_discoverable)
         ESP_LOGW(TAG, "Saved host is no longer bonded; clearing it before pairing");
         clear_last_host();
         return start_sync_pairing_window(general_discoverable);
+    }
+
+    if (wiimote_state_is_connected()) {
+        stop_hid_reconnect_timer();
+        portENTER_CRITICAL(&s_reconnect_mux);
+        if (s_sync_after_unplug_pending || s_sync_after_disconnect_pending ||
+            s_sync_after_bond_remove_pending) {
+            portEXIT_CRITICAL(&s_reconnect_mux);
+            ESP_LOGW(TAG, "Pair request rejected while another host transition is pending");
+            return ESP_ERR_INVALID_STATE;
+        }
+        s_reconnect_paused = true;
+        s_sync_after_unplug_pending = true;
+        s_sync_after_unplug_general = general_discoverable;
+        s_sync_after_unplug_disconnect_pending = true;
+        portEXIT_CRITICAL(&s_reconnect_mux);
+
+        close_sync_pairing_window("host switch requested");
+        err = esp_bt_hid_device_disconnect();
+        if (err != ESP_OK) {
+            portENTER_CRITICAL(&s_reconnect_mux);
+            s_reconnect_paused = false;
+            s_sync_after_unplug_pending = false;
+            s_sync_after_unplug_general = false;
+            s_sync_after_unplug_disconnect_pending = false;
+            portEXIT_CRITICAL(&s_reconnect_mux);
+            ESP_LOGE(TAG, "Could not disconnect current HID host for Pair: %s",
+                     esp_err_to_name(err));
+            return err;
+        }
+
+        ESP_LOGW(TAG, "HOST_SWITCH_HID_DISCONNECT_REQUESTED for saved HID host");
+        return ESP_OK;
     }
 
     return queue_virtual_cable_unplug(true, general_discoverable);
@@ -857,6 +898,50 @@ static void on_gap_event(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                  wiimote_bt_address_string(param->acl_disconn_cmpl_stat.bda, peer));
         break;
     }
+    case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT: {
+        esp_bd_addr_t pending_host = {0};
+        bool sync_after_bond_remove = false;
+        bool general_discoverable = false;
+        portENTER_CRITICAL(&s_reconnect_mux);
+        if (s_sync_after_bond_remove_pending &&
+            memcmp(param->remove_bond_dev_cmpl.bda,
+                   s_sync_after_bond_remove_host,
+                   sizeof(s_sync_after_bond_remove_host)) == 0) {
+            sync_after_bond_remove = true;
+            general_discoverable = s_sync_after_bond_remove_general;
+            memcpy(pending_host, s_sync_after_bond_remove_host,
+                   sizeof(pending_host));
+            s_sync_after_bond_remove_pending = false;
+            s_sync_after_bond_remove_general = false;
+            memset(s_sync_after_bond_remove_host, 0,
+                   sizeof(s_sync_after_bond_remove_host));
+        }
+        portEXIT_CRITICAL(&s_reconnect_mux);
+
+        char peer[18];
+        ESP_LOGI(TAG, "bond removal result=%u peer=%s",
+                 (unsigned)param->remove_bond_dev_cmpl.status,
+                 wiimote_bt_address_string(param->remove_bond_dev_cmpl.bda, peer));
+        if (!sync_after_bond_remove) break;
+        if (param->remove_bond_dev_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            portENTER_CRITICAL(&s_reconnect_mux);
+            s_reconnect_paused = false;
+            portEXIT_CRITICAL(&s_reconnect_mux);
+            ESP_LOGE(TAG, "Could not remove previous host bond; Pair discovery was not opened");
+            schedule_hid_reconnect("saved host bond removal failed");
+            break;
+        }
+
+        ESP_LOGI(TAG, "HOST_SWITCH_BOND_REMOVED peer=%s",
+                 wiimote_bt_address_string(pending_host, peer));
+        clear_last_host();
+        esp_err_t err = start_sync_pairing_window(general_discoverable);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Could not open SYNC after saved host bond removal: %s",
+                     esp_err_to_name(err));
+        }
+        break;
+    }
     default:
         ESP_LOGI(TAG, "GAP event=%d", event);
         break;
@@ -950,30 +1035,42 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         ESP_LOGI(TAG, "HID close result=%d state=%d",
                  param->close.status, param->close.conn_status);
         bool sync_after_disconnect = false;
+        bool sync_after_unplug_disconnect = false;
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
         portENTER_CRITICAL(&s_reconnect_mux);
         sync_after_disconnect = s_sync_after_disconnect_pending;
-        s_sync_after_disconnect_pending = false;
+        sync_after_unplug_disconnect = s_sync_after_unplug_disconnect_pending;
         portEXIT_CRITICAL(&s_reconnect_mux);
 #endif
         if (param->close.status != ESP_HIDD_SUCCESS) {
-            if (sync_after_disconnect) {
+            if (sync_after_disconnect || sync_after_unplug_disconnect) {
                 portENTER_CRITICAL(&s_reconnect_mux);
                 s_reconnect_paused = false;
+                if (sync_after_disconnect) s_sync_after_disconnect_pending = false;
+                if (sync_after_unplug_disconnect) {
+                    s_sync_after_unplug_disconnect_pending = false;
+                    s_sync_after_unplug_pending = false;
+                    s_sync_after_unplug_general = false;
+                }
                 portEXIT_CRITICAL(&s_reconnect_mux);
             }
             ESP_LOGE(TAG, "HID close failed; preserving current connection state");
             break;
         }
         if (param->close.conn_status != ESP_HIDD_CONN_STATE_DISCONNECTED) {
-            if (sync_after_disconnect) {
-                portENTER_CRITICAL(&s_reconnect_mux);
-                s_reconnect_paused = false;
-                portEXIT_CRITICAL(&s_reconnect_mux);
-            }
-            ESP_LOGI(TAG, "HID disconnect not complete; discovery remains unchanged");
+            ESP_LOGI(TAG, "HID disconnect not complete; waiting for final close callback");
             break;
         }
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+        if (sync_after_disconnect || sync_after_unplug_disconnect) {
+            portENTER_CRITICAL(&s_reconnect_mux);
+            if (sync_after_disconnect) s_sync_after_disconnect_pending = false;
+            if (sync_after_unplug_disconnect) {
+                s_sync_after_unplug_disconnect_pending = false;
+            }
+            portEXIT_CRITICAL(&s_reconnect_mux);
+        }
+#endif
         wiimote_state_close();
         wiimote_web_set_hid_connected(false);
         close_sync_pairing_window("HID connection closed");
@@ -989,6 +1086,23 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             portEXIT_CRITICAL(&s_reconnect_mux);
             ESP_LOGE(TAG, "Could not open SYNC after HID disconnect: %s",
                      esp_err_to_name(err));
+        }
+        if (sync_after_unplug_disconnect) {
+            esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
+            if (err == ESP_OK) {
+                ESP_LOGW(TAG, "HOST_SWITCH_LOCAL_VIRTUAL_CABLE_UNPLUG_REQUESTED after HID disconnect");
+                break;
+            }
+
+            portENTER_CRITICAL(&s_reconnect_mux);
+            s_reconnect_paused = false;
+            s_sync_after_unplug_pending = false;
+            s_sync_after_unplug_general = false;
+            portEXIT_CRITICAL(&s_reconnect_mux);
+            ESP_LOGE(TAG, "Could not unlink saved HID host after disconnect: %s",
+                     esp_err_to_name(err));
+            schedule_hid_reconnect("local virtual-cable unplug failed");
+            break;
         }
 #endif
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
@@ -1087,19 +1201,51 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         wiimote_state_close();
         wiimote_web_set_hid_connected(false);
         stop_hid_reconnect_timer();
-        clear_last_host();
         close_sync_pairing_window("virtual cable unplugged");
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
         if (sync_after_unplug) {
-            esp_err_t err = start_sync_pairing_window(general_discoverable);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "SYNC window opened after previous host virtual cable was released");
+            esp_bd_addr_t host;
+            if (!copy_last_host(host)) {
+                clear_last_host();
+                esp_err_t err = start_sync_pairing_window(general_discoverable);
+                if (err == ESP_OK) {
+                    ESP_LOGI(TAG, "SYNC window opened after virtual-cable release with no saved host");
+                    break;
+                }
+                ESP_LOGE(TAG, "Could not open SYNC after virtual-cable release: %s",
+                         esp_err_to_name(err));
                 break;
             }
-            ESP_LOGE(TAG, "Could not open SYNC after virtual-cable unplug: %s",
-                     esp_err_to_name(err));
+
+            portENTER_CRITICAL(&s_reconnect_mux);
+            s_sync_after_bond_remove_pending = true;
+            s_sync_after_bond_remove_general = general_discoverable;
+            memcpy(s_sync_after_bond_remove_host, host,
+                   sizeof(s_sync_after_bond_remove_host));
+            portEXIT_CRITICAL(&s_reconnect_mux);
+
+            esp_err_t err = esp_bt_gap_remove_bond_device(host);
+            if (err != ESP_OK) {
+                portENTER_CRITICAL(&s_reconnect_mux);
+                s_sync_after_bond_remove_pending = false;
+                s_sync_after_bond_remove_general = false;
+                memset(s_sync_after_bond_remove_host, 0,
+                       sizeof(s_sync_after_bond_remove_host));
+                s_reconnect_paused = false;
+                portEXIT_CRITICAL(&s_reconnect_mux);
+                ESP_LOGE(TAG, "Could not remove saved host bond before Pair: %s",
+                         esp_err_to_name(err));
+                schedule_hid_reconnect("host bond removal request failed");
+                break;
+            }
+
+            char peer[18];
+            ESP_LOGI(TAG, "HOST_SWITCH_BOND_REMOVE_REQUESTED peer=%s",
+                     wiimote_bt_address_string(host, peer));
+            break;
         }
 #endif
+        clear_last_host();
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
         maybe_arm_upstream_discovery("virtual cable unplugged");
 #else

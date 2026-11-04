@@ -27,6 +27,11 @@ if "syncButton.disabled=syncRequestPending||pairingPending;" not in web:
     raise SystemExit("Pair button is disabled by the connected status")
 if "syncButton.textContent=left?'Pair · '+left+'s':'Pair';" not in web:
     raise SystemExit("Pair button does not display the active pairing countdown")
+if "Pair · Releasing" not in web or \
+   "if(pairingPending&&s.sync_window&&!pairingWindowStarted)startPairingCountdown()" not in web:
+    raise SystemExit("Pair countdown can start before discovery is confirmed")
+if "Pair failed: host release did not complete" not in web:
+    raise SystemExit("Pair does not report a host-release timeout")
 if "id='rearm-button'" in web or "id='rearm-explanation'" in web or "syncStatusEl" in web:
     raise SystemExit("Pairing panel still has extra controls or text")
 if '.uri = "/api/sync", .method = HTTP_POST, .handler = sync_limited_handler' not in web:
@@ -50,9 +55,32 @@ if "wiimote_web_set_reconnect_pending(true)" not in app or \
 if "wiimote_web_set_sync_callback(request_sync_with_host_switch)" not in app:
     raise SystemExit("Pair does not route through the saved-host switch procedure")
 if "return queue_virtual_cable_unplug(true, general_discoverable)" not in app:
-    raise SystemExit("Pair does not release the saved virtual cable before discovery")
-if "SYNC window opened after previous host virtual cable was released" not in app:
-    raise SystemExit("Pair does not wait for virtual-cable release before discovery")
+    raise SystemExit("Pair does not unlink the saved virtual cable before discovery")
+if "HOST_SWITCH_HID_DISCONNECT_REQUESTED" not in app:
+    raise SystemExit("Pair does not disconnect an active host before unlinking it")
+close_event = app.split("case ESP_HIDD_CLOSE_EVT:", 1)[1].split(
+    "case ESP_HIDD_GET_REPORT_EVT:", 1
+)[0]
+if "if (sync_after_unplug_disconnect)" not in close_event or \
+   "esp_bt_hid_device_virtual_cable_unplug()" not in close_event:
+    raise SystemExit("Pair does not unlink the host after active HID disconnection")
+nonfinal_close = close_event.split(
+    "if (param->close.conn_status != ESP_HIDD_CONN_STATE_DISCONNECTED)", 1
+)[1].split("wiimote_state_close()", 1)[0]
+if "s_sync_after_unplug_pending = false" in nonfinal_close or \
+   "waiting for final close callback" not in nonfinal_close:
+    raise SystemExit("Pair state is not preserved across intermediate close callbacks")
+if "esp_bt_gap_remove_bond_device(host)" not in app or \
+   "ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT" not in app:
+    raise SystemExit("Pair does not remove the saved host bond before discovery")
+bond_remove_handler = app.split(
+    "case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT:", 1
+)[1].split("default:", 1)[0]
+if "HOST_SWITCH_BOND_REMOVED" not in bond_remove_handler or \
+   "start_sync_pairing_window(general_discoverable)" not in bond_remove_handler:
+    raise SystemExit("Pair discovery is not gated on successful old-bond removal")
+if "SYNC_PAIRING_WINDOW_OPEN seconds=%u" not in app:
+    raise SystemExit("Pair does not log the confirmed discovery window")
 sync_handler = web.split("static esp_err_t sync_handler", 1)[1].split(
     "static esp_err_t sync_general_handler", 1
 )[0]
@@ -60,9 +88,6 @@ if "hid_connected_snapshot()" in sync_handler:
     raise SystemExit("Pair button cannot switch hosts while HID is connected")
 if "WIIMOTE_RECONNECT_INCOMING_GRACE_MS 10000U" not in app:
     raise SystemExit("Mode handoff does not allow an incoming reconnect grace period")
-close_event = app.split("case ESP_HIDD_CLOSE_EVT:", 1)[1].split(
-    "case ESP_HIDD_GET_REPORT_EVT:", 1
-)[0]
 if "s_reconnect_delay_ms = WIIMOTE_RECONNECT_INCOMING_GRACE_MS" not in close_event:
     raise SystemExit("HID close still triggers the outgoing reconnect before incoming hosts can respond")
 unplug_handler = web.split("static esp_err_t virtual_cable_unplug_handler", 1)[1].split(
