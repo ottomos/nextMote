@@ -898,6 +898,7 @@ static void on_gap_event(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
                  wiimote_bt_address_string(param->acl_disconn_cmpl_stat.bda, peer));
         break;
     }
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
     case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT: {
         esp_bd_addr_t pending_host = {0};
         bool sync_after_bond_remove = false;
@@ -942,6 +943,7 @@ static void on_gap_event(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         }
         break;
     }
+#endif
     default:
         ESP_LOGI(TAG, "GAP event=%d", event);
         break;
