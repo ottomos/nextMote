@@ -442,7 +442,7 @@ static esp_err_t imu_handler(httpd_req_t *req)
                           "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f,"
                           "\"accel_available\":%s,\"accel_samples\":%lu,\"accel_age_ms\":%lld,"
                           "\"accel_ms2\":[%.4f,%.4f,%.4f],\"accel_raw\":[%u,%u,%u],"
-                          "\"report_mode\":%u,\"hid_connected\":%s}",
+                          "\"recoveries\":%lu,\"report_mode\":%u,\"hid_connected\":%s}",
                           state.detected ? "true" : "false",
                           state.available ? "true" : "false",
                           (unsigned)state.address,
@@ -453,7 +453,7 @@ static esp_err_t imu_handler(httpd_req_t *req)
                           (unsigned long)state.accel_samples, age_ms,
                           (double)state.accel_ms2[0], (double)state.accel_ms2[1],
                           (double)state.accel_ms2[2], raw_x, raw_y, raw_z,
-                          remote.report_mode, remote.connected ? "true" : "false");
+                          (unsigned long)state.recoveries, remote.report_mode, remote.connected ? "true" : "false");
     if (length < 0 || (size_t)length >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "IMU response formatting failed");

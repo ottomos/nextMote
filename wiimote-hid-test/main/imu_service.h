@@ -16,6 +16,7 @@ typedef struct {
     float accel_ms2[3];
     uint32_t accel_samples;
     int64_t accel_time_us;
+    uint32_t recoveries;
 } imu_state_t;
 
 #define IMU_ACCEL_MAX_AGE_US 250000

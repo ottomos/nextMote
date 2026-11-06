@@ -13,10 +13,16 @@
 #include "freertos/task.h"
 #include "sensor_i2c_bus.h"
 
-#define IMU_I2C_SPEED_HZ 100000
+#define IMU_I2C_SPEED_HZ 400000
 #define IMU_I2C_TIMEOUT_MS 100
-#define IMU_REPORT_INTERVAL_US 10000
-#define IMU_SERVICE_PERIOD_MS 10
+#define IMU_ACCEL_INTERVAL_US 10000
+/* Orientation only feeds the web page; 50 Hz halves its bus traffic. */
+#define IMU_ROTATION_INTERVAL_US 20000
+#define IMU_SERVICE_PERIOD_MS 5
+/* Bound one bus hold so other I2C users (IR camera) are not starved. */
+#define IMU_MAX_PACKETS_PER_LOCK 8
+#define IMU_STALL_US 500000
+#define IMU_REINIT_AFTER_STALLS 3
 #define IMU_INT_GPIO GPIO_NUM_27
 #define IMU_RESET_GPIO GPIO_NUM_26
 
@@ -87,14 +93,102 @@ static void sensor_callback(bno085_handle_t handle,
     }
 }
 
+static esp_err_t enable_reports(bno085_handle_t handle)
+{
+    esp_err_t err = bno085_enable_sensor(handle, BNO085_SENSOR_ROTATION_VECTOR,
+                                         IMU_ROTATION_INTERVAL_US);
+    if (err == ESP_OK) {
+        err = bno085_enable_sensor(handle, BNO085_SENSOR_ACCELEROMETER,
+                                   IMU_ACCEL_INTERVAL_US);
+    }
+    return err;
+}
+
+static esp_err_t open_bno(i2c_master_dev_handle_t device, bno085_handle_t *out)
+{
+    bno085_config_t config;
+    bno085_config_default(&config);
+    bno085_handle_t handle = NULL;
+    esp_err_t err = bno085_init(&config, device, IMU_INT_GPIO, IMU_RESET_GPIO, &handle);
+    if (err != ESP_OK) return err;
+    err = bno085_register_sensor_callback(handle, sensor_callback, NULL);
+    if (err == ESP_OK) err = enable_reports(handle);
+    if (err != ESP_OK) {
+        bno085_deinit(handle);
+        return err;
+    }
+    *out = handle;
+    return ESP_OK;
+}
+
+static uint32_t accel_sample_count(void)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    const uint32_t samples = s_state.accel_samples;
+    portEXIT_CRITICAL(&s_state_mux);
+    return samples;
+}
+
+/*
+ * The BNO08x can reset itself (watchdog, bus glitch); afterwards every report
+ * is disabled and the driver only logs the reset. Re-enable the reports when
+ * accelerometer samples stop, and fully re-initialize after repeated stalls.
+ */
+static void recover_stall(unsigned *stalls)
+{
+    ++*stalls;
+    portENTER_CRITICAL(&s_state_mux);
+    ++s_state.recoveries;
+    portEXIT_CRITICAL(&s_state_mux);
+
+    if (*stalls < IMU_REINIT_AFTER_STALLS) {
+        ESP_LOGW(TAG, "BNO08x stream stalled; re-enabling reports (attempt %u)", *stalls);
+        esp_err_t err = enable_reports(s_bno);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Re-enabling reports failed: %s", esp_err_to_name(err));
+        }
+        return;
+    }
+
+    ESP_LOGW(TAG, "BNO08x stream still stalled; resetting and re-initializing");
+    bno085_deinit(s_bno);
+    s_bno = NULL;
+    esp_err_t err = open_bno(s_bno_device, &s_bno);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BNO08x re-initialization failed: %s", esp_err_to_name(err));
+    }
+    *stalls = 0;
+}
+
 static void imu_service_task(void *arg)
 {
-    bno085_handle_t handle = (bno085_handle_t)arg;
+    (void)arg;
+    uint32_t last_samples = accel_sample_count();
+    int64_t last_progress_us = esp_timer_get_time();
+    unsigned stalls = 0;
 
     for (;;) {
         esp_err_t err = sensor_i2c_bus_lock(portMAX_DELAY);
         if (err == ESP_OK) {
-            bno085_service(handle);
+            if (s_bno != NULL) {
+                /* The HAL reads one SHTP packet per call and only while INT is low. */
+                int packets = 0;
+                do {
+                    bno085_service(s_bno);
+                } while (++packets < IMU_MAX_PACKETS_PER_LOCK &&
+                         gpio_get_level(IMU_INT_GPIO) == 0);
+            }
+
+            const uint32_t samples = accel_sample_count();
+            const int64_t now = esp_timer_get_time();
+            if (samples != last_samples || s_bno == NULL) {
+                if (samples != last_samples) stalls = 0;
+                last_samples = samples;
+                last_progress_us = now;
+            } else if (now - last_progress_us > IMU_STALL_US) {
+                recover_stall(&stalls);
+                last_progress_us = esp_timer_get_time();
+            }
             sensor_i2c_bus_unlock();
         } else {
             ESP_LOGE(TAG, "Failed to lock shared I2C bus: %s", esp_err_to_name(err));
@@ -157,32 +251,10 @@ esp_err_t imu_service_start(void)
             continue;
         }
 
-        bno085_config_t config;
-        bno085_config_default(&config);
-        err = bno085_init(&config, device, IMU_INT_GPIO, IMU_RESET_GPIO, &handle);
+        err = open_bno(device, &handle);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "BNO08x initialization failed at 0x%02x: %s",
+            ESP_LOGW(TAG, "BNO08x setup failed at 0x%02x: %s",
                      address, esp_err_to_name(err));
-            (void)i2c_master_bus_rm_device(device);
-            device = NULL;
-            last_error = err;
-            continue;
-        }
-
-        err = bno085_register_sensor_callback(handle, sensor_callback, NULL);
-        if (err == ESP_OK) {
-            err = bno085_enable_sensor(handle, BNO085_SENSOR_ROTATION_VECTOR,
-                                       IMU_REPORT_INTERVAL_US);
-        }
-        if (err == ESP_OK) {
-            err = bno085_enable_sensor(handle, BNO085_SENSOR_ACCELEROMETER,
-                                       IMU_REPORT_INTERVAL_US);
-        }
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to enable BNO08x orientation/accelerometer: %s",
-                     esp_err_to_name(err));
-            bno085_deinit(handle);
-            handle = NULL;
             (void)i2c_master_bus_rm_device(device);
             device = NULL;
             last_error = err;
@@ -214,7 +286,7 @@ esp_err_t imu_service_start(void)
     portEXIT_CRITICAL(&s_state_mux);
 
     BaseType_t task_result = xTaskCreate(imu_service_task, "imu_service", 4096,
-                                         (void *)s_bno, 5, NULL);
+                                         NULL, 5, NULL);
     if (task_result != pdPASS) {
         ESP_LOGE(TAG, "Failed to create IMU service task");
         bno085_deinit(s_bno);
@@ -232,7 +304,7 @@ esp_err_t imu_service_start(void)
 
     s_started = true;
     sensor_i2c_bus_unlock();
-    ESP_LOGI(TAG, "BNO08x initialized at 0x%02x; rotation vector and gravity-inclusive acceleration enabled at 100 Hz",
-             detected_address);
+    ESP_LOGI(TAG, "BNO08x initialized at 0x%02x; acceleration 100 Hz, rotation vector 50 Hz, I2C %u kHz",
+             detected_address, IMU_I2C_SPEED_HZ / 1000);
     return ESP_OK;
 }
