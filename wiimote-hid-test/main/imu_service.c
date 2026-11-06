@@ -192,13 +192,16 @@ static void imu_service_task(void *arg)
     unsigned stalls = 0;
 
     for (;;) {
-        esp_err_t err = sensor_i2c_bus_lock(portMAX_DELAY);
+        esp_err_t err = sensor_i2c_bus_lock_as(SENSOR_I2C_USER_IMU, portMAX_DELAY);
         if (err == ESP_OK) {
             if (s_bno != NULL) {
                 /* The HAL reads one SHTP packet per call and only while INT is low. */
                 int packets = 0;
                 do {
+                    const int64_t packet_start = esp_timer_get_time();
                     bno085_service(s_bno);
+                    sensor_i2c_bus_record_imu_packet(
+                        (uint32_t)(esp_timer_get_time() - packet_start));
                 } while (++packets < IMU_MAX_PACKETS_PER_LOCK &&
                          gpio_get_level(IMU_INT_GPIO) == 0);
             }
@@ -217,7 +220,9 @@ static void imu_service_task(void *arg)
         } else {
             ESP_LOGE(TAG, "Failed to lock shared I2C bus: %s", esp_err_to_name(err));
         }
-        vTaskDelay(pdMS_TO_TICKS(IMU_SERVICE_PERIOD_MS));
+        /* pdMS_TO_TICKS(5) is 0 at 100 Hz; vTaskDelay(0) only yields and the task spins on the bus. */
+        const TickType_t delay = pdMS_TO_TICKS(IMU_SERVICE_PERIOD_MS);
+        vTaskDelay(delay > 0 ? delay : 1);
     }
 }
 
@@ -243,7 +248,7 @@ esp_err_t imu_service_start(void)
         return err;
     }
 
-    err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IMU_I2C_TIMEOUT_MS));
+    err = sensor_i2c_bus_lock_as(SENSOR_I2C_USER_IMU, pdMS_TO_TICKS(IMU_I2C_TIMEOUT_MS));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Unable to lock shared I2C bus: %s", esp_err_to_name(err));
         return err;

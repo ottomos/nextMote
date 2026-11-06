@@ -16,6 +16,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "imu_service.h"
+#include "sensor_i2c_bus.h"
 #include "esp_timer.h"
 #include "wiimote_accel.h"
 #include "wiimote_state.h"
@@ -475,6 +476,65 @@ static esp_err_t imu_handler(httpd_req_t *req)
     return httpd_resp_send(req, response, (ssize_t)length);
 }
 
+static esp_err_t bus_handler(httpd_req_t *req)
+{
+    char query[32];
+    char value[8];
+    const bool reset = httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+                       httpd_query_key_value(query, "reset", value, sizeof(value)) == ESP_OK &&
+                       value[0] == '1';
+
+    sensor_i2c_bus_stats_t stats;
+    sensor_i2c_bus_get_stats(&stats);
+    if (reset) sensor_i2c_bus_reset_stats();
+
+    static const char *const names[SENSOR_I2C_USER_COUNT] = {"camera", "imu", "other"};
+    char response[1024];
+    size_t used = 0;
+    int length = snprintf(response, sizeof(response), "{\"window_ms\":%lld,\"reset\":%s",
+                          (long long)((esp_timer_get_time() - stats.since_us) / 1000),
+                          reset ? "true" : "false");
+    if (length < 0) goto fail;
+    used = (size_t)length;
+    for (int i = 0; i < SENSOR_I2C_USER_COUNT; ++i) {
+        const sensor_i2c_user_stats_t *u = &stats.user[i];
+        length = snprintf(response + used, sizeof(response) - used,
+                          ",\"%s\":{\"locks\":%lu,\"timeouts\":%lu,"
+                          "\"wait_avg_us\":%lu,\"wait_max_us\":%lu,"
+                          "\"waits_over_20ms\":%lu,\"waits_over_100ms\":%lu,"
+                          "\"hold_avg_us\":%lu,\"hold_max_us\":%lu,"
+                          "\"holds_over_20ms\":%lu,\"holds_over_100ms\":%lu}",
+                          names[i], (unsigned long)u->locks, (unsigned long)u->timeouts,
+                          (unsigned long)(u->locks ? u->wait_sum_us / u->locks : 0),
+                          (unsigned long)u->wait_max_us,
+                          (unsigned long)u->waits_over_20ms, (unsigned long)u->waits_over_100ms,
+                          (unsigned long)(u->locks ? u->hold_sum_us / u->locks : 0),
+                          (unsigned long)u->hold_max_us,
+                          (unsigned long)u->holds_over_20ms, (unsigned long)u->holds_over_100ms);
+        if (length < 0 || (size_t)length >= sizeof(response) - used) goto fail;
+        used += (size_t)length;
+    }
+    length = snprintf(response + used, sizeof(response) - used,
+                      ",\"imu_packets\":{\"count\":%lu,\"avg_us\":%lu,\"max_us\":%lu,"
+                      "\"over_5ms\":%lu,\"over_20ms\":%lu}}",
+                      (unsigned long)stats.imu_packets,
+                      (unsigned long)(stats.imu_packets ?
+                                      stats.imu_packet_sum_us / stats.imu_packets : 0),
+                      (unsigned long)stats.imu_packet_max_us,
+                      (unsigned long)stats.imu_packets_over_5ms,
+                      (unsigned long)stats.imu_packets_over_20ms);
+    if (length < 0 || (size_t)length >= sizeof(response) - used) goto fail;
+    used += (size_t)length;
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, response, (ssize_t)used);
+
+fail:
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "bus response formatting failed");
+    return ESP_FAIL;
+}
+
 static esp_err_t button_handler(httpd_req_t *req)
 {
     if (req->content_len == 0 || req->content_len > MAX_HTTP_BODY) {
@@ -783,6 +843,9 @@ static const httpd_uri_t s_camera_uri = {
 static const httpd_uri_t s_imu_uri = {
     .uri = "/api/imu", .method = HTTP_GET, .handler = imu_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_bus_uri = {
+    .uri = "/api/bus", .method = HTTP_GET, .handler = bus_handler, .user_ctx = NULL,
+};
 static const httpd_uri_t s_button_uri = {
     .uri = "/api/button", .method = HTTP_POST, .handler = button_handler, .user_ctx = NULL,
 };
@@ -819,7 +882,7 @@ static const httpd_uri_t s_reconnect_uri = {
 static void start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 13;
+    config.max_uri_handlers = 14;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -830,6 +893,7 @@ static void start_http_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_status_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_camera_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_imu_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_bus_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_button_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_limited_uri));

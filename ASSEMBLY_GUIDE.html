@@ -99,6 +99,21 @@
   .sw.grn  { background: var(--scl); }
   .sw.blu  { background: var(--rst); }
   .sw.vio  { background: var(--int); }
+  .board-scroll { overflow-x: auto; }
+  .board-layout { min-width: 660px; table-layout: fixed; }
+  .board-layout caption { text-align: left; padding: 0 0 12px; }
+  .board-layout .pin-label { width: 58px; text-align: center; font-weight: 700; font-family: monospace; }
+  .board-layout .board-body {
+    width: 110px;
+    background: #273449;
+    color: #fff;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .board-layout .used { background: #e8f5ed; }
+  .board-layout .free { background: #eef5ff; }
+  .board-layout .restricted { background: #fff3df; }
+  .board-layout .power { background: #f2eafb; }
   .pinmap {
     display: grid;
     gap: 10px;
@@ -410,9 +425,9 @@ GPIO27 (INT, active low) ──────────────────�
         <li><code>BNO08x initialized at 0x4a</code> or <code>0x4b</code> → IMU found and rotation-vector reports enabled.</li>
       </ul>
     </li>
-    <li>With only the BNO connected, <code>/api/imu</code> should report <code>detected:true</code>; after the first rotation-vector event it should report <code>available:true</code> and roll, pitch, and yaw in degrees. On <code>nxt12-imu-integration</code>, also check <code>accel_available:true</code>, an increasing <code>accel_samples</code> count, and fresh <code>accel_age_ms</code>. The user has verified IMU-only web orientation; receiver/game motion remains pending.</li>
+    <li>With only the BNO connected, <code>/api/imu</code> should report <code>detected:true</code>; after the first rotation-vector event it should report <code>available:true</code> and roll, pitch, and yaw in degrees. On <code>nxt12-imu-integration</code>, also check <code>accel_available:true</code>, an increasing <code>accel_samples</code> count, and fresh <code>accel_age_ms</code>. On 6 November 2026, the user reported basic motion now seems to work in Mario Kart Wii through Dolphin + DolphinBar mode 4 with MotionPlus disabled, in addition to the earlier IMU-only web orientation check. This does not certify full gameplay or motion on real Wii/vWii.</li>
     <li>Open the web page at the IP printed in serial to see the live IR plot and the BNO08x orientation panel. The camera may report not detected during an IMU-only test; that does not prevent the IMU panel from working.</li>
-    <li>Standard Wii Remote acceleration is implemented in reports <code>0x31</code>/<code>0x33</code> on the integration branch. An emulated MotionPlus from the BNO08x gyro is available only with the build flag <code>-DNEXTMOTE_ENABLE_MOTION_PLUS=1</code> (off by default; not yet tested in a game). Adjust mounting axes/signs in <code>wiimote-hid-test/main/wiimote_accel.h</code> before game acceptance; default mapping is direct X/Y/Z. See the <a href="./wiimote-hid-test/README.md#standard-wii-remote-motion-integration">motion test checklist</a>. A web preview or an open HID link is not proof that the console received motion data.</li>
+    <li>Standard Wii Remote acceleration is implemented in reports <code>0x31</code>/<code>0x33</code> on the integration branch. An emulated MotionPlus from the BNO08x gyro is available only with the build flag <code>-DNEXTMOTE_ENABLE_MOTION_PLUS=1</code> (off by default; not yet tested in a game). Check mounting axes/signs in <code>wiimote-hid-test/main/wiimote_accel.h</code> for the final controller mounting; default mapping is direct X/Y/Z. See the <a href="./wiimote-hid-test/README.md#standard-wii-remote-motion-integration">motion test checklist</a> for remaining checks, including simultaneous camera/IMU hardware operation. A web preview or an open HID link alone is not proof that the console received motion data.</li>
   </ol>
 
   <h3>Troubleshooting quick-reference</h3>
@@ -441,6 +456,60 @@ GPIO27 (INT, active low) ──────────────────�
 </p>
 
 <p class="note">For current firmware, pairing, vWii, and sensor-bar results, see the <a href="../plan.md">implementation plan</a> and <a href="./IR_CAMERA_STATUS.md">camera/IMU status</a>.</p>
+
+<section id="complete-board-pin-map">
+  <h2>Complete board pin diagram - our 30-pin ESP32-WROOM board</h2>
+  <p>Top/component-side view, matching the reference image supplied on 6 November 2026:
+    <strong>antenna at the top, USB at the bottom</strong>. Each row below is one
+    physical pair of header pins. Labels follow the supplied image.</p>
+  <div class="board-scroll">
+    <table class="board-layout">
+      <caption>Current pin use; explanations are in the separate table below.</caption>
+      <thead>
+        <tr><th>Left pin use</th><th class="pin-label">Label</th><th class="board-body">ANTENNA</th><th class="pin-label">Label</th><th>Right pin use</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="restricted">Board reset</td><td class="pin-label restricted">EN</td><td class="board-body" rowspan="15">ESP32<br>WROOM-32<br><br>Component<br>side<br><br>USB below</td><td class="pin-label free">23</td><td class="free">Unused</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">VP</td><td class="pin-label used">22</td><td class="used">Camera + BNO SCL</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">VN</td><td class="pin-label restricted">TX</td><td class="restricted">USB serial TX</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">34</td><td class="pin-label restricted">TR</td><td class="restricted">USB serial RX</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">35</td><td class="pin-label used">21</td><td class="used">Camera + BNO SDA</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">32</td><td class="pin-label free">19</td><td class="free">Unused</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">33</td><td class="pin-label free">18</td><td class="free">Unused</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">25</td><td class="pin-label restricted">5</td><td class="restricted">Unused</td></tr>
+        <tr><td class="used">BNO RST</td><td class="pin-label used">26</td><td class="pin-label free">17</td><td class="free">Unused</td></tr>
+        <tr><td class="used">BNO INT</td><td class="pin-label used">27</td><td class="pin-label free">16</td><td class="free">Unused</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">14</td><td class="pin-label free">4</td><td class="free">Unused</td></tr>
+        <tr><td class="restricted">Unused</td><td class="pin-label restricted">12</td><td class="pin-label restricted">2</td><td class="restricted">Unused</td></tr>
+        <tr><td class="free">Unused</td><td class="pin-label free">13</td><td class="pin-label restricted">15</td><td class="restricted">Unused</td></tr>
+        <tr><td class="power">Common ground</td><td class="pin-label power">GND</td><td class="pin-label power">GND</td><td class="power">Common ground</td></tr>
+        <tr><td class="power">Unused</td><td class="pin-label power">VIN</td><td class="pin-label power">3v3</td><td class="power">Camera + BNO power</td></tr>
+      </tbody>
+      <tfoot><tr><td colspan="5" style="text-align:center"><strong>RESET button &nbsp; | &nbsp; USB connector &nbsp; | &nbsp; FLASH / BOOT button</strong></td></tr></tfoot>
+    </table>
+  </div>
+  <h3>Pin explanations and wiring restrictions</h3>
+  <table class="pin-explanations">
+    <thead><tr><th>Pin / topic</th><th>Explanation</th></tr></thead>
+    <tbody>
+      <tr><td>Diagram colors</td><td>Green: assigned signal. Blue: unused input candidate. Amber: reserved or boot-sensitive. Purple: power/ground.</td></tr>
+      <tr><td>Unused</td><td>Unassigned in the current sensor setup, not necessarily suitable for a button. No physical button functions have been assigned or enabled in firmware.</td></tr>
+      <tr><td>Numbered labels</td><td>Some boards add a D prefix: 15 and D15 refer to the same header pin.</td></tr>
+      <tr><td>17 / 16</td><td>Also labeled TX2 / RX2. Unused UART2 pins can be used as ordinary digital inputs or outputs.</td></tr>
+      <tr><td>TR / TX</td><td>The reference's TR is the primary receive pin, normally labeled RX or RX0, opposite 34. TX may be labeled TX0. Keep both reserved for USB serial programming and logs.</td></tr>
+      <tr><td>22 / 21</td><td>Shared camera + BNO I2C clock/data. The reference's outer GPIO23 callout at 22 is a typo; use 22 for SCL.</td></tr>
+      <tr><td>26 / 27</td><td>BNO reset and active-low interrupt/data-ready, respectively.</td></tr>
+      <tr><td>VP, VN, 34, 35</td><td>Input-only, without internal pull-ups. A button needs an external pull-up to 3v3.</td></tr>
+      <tr><td>32, 33, 25, 14, 13, 23, 19, 18, 17, 16, 4</td><td>Unused input/output candidates with internal pull-ups. Reserve future LED, rumble, and speaker outputs before assigning all of them to buttons.</td></tr>
+      <tr><td>13 / 14</td><td>Also JTAG pins; using JTAG would reserve these candidates.</td></tr>
+      <tr><td>5, 12, 2, 15</td><td>Boot-strapping pins. Avoid for initial button wiring because switch states during reset can affect startup. Pin 2 may also drive an onboard LED.</td></tr>
+      <tr><td>EN / RESET / FLASH</td><td>Board enable/reset and onboard reset/boot controls are not spare gameplay inputs.</td></tr>
+      <tr><td>GND / 3v3 / VIN</td><td>Both GND headers share common ground. Camera and BNO use 3v3 in the direct 3.3 V setup. VIN is not used for sensors in this setup; it is a board supply rail, not a logic input.</td></tr>
+      <tr><td>Button capacity</td><td>15 unused non-strapping input candidates: 11 with internal pull-ups and four input-only pins needing external pull-ups. Enough for 11 gameplay buttons plus SYNC, subject to future output reservations.</td></tr>
+      <tr><td>Wiring</td><td>Power off before wiring. Buttons should switch their input to common GND with a suitable pull-up to 3v3. Never apply 5 V to an input.</td></tr>
+    </tbody>
+  </table>
+</section>
 
 </div>
 </body>

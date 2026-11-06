@@ -57,7 +57,7 @@ static void clear_points(ir_camera_state_t *state)
 static esp_err_t write_register(uint8_t reg, uint8_t value)
 {
     const uint8_t command[] = {reg, value};
-    esp_err_t err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
+    esp_err_t err = sensor_i2c_bus_lock_as(SENSOR_I2C_USER_CAMERA, pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
     if (err != ESP_OK) return err;
 
     err = i2c_master_transmit(s_device, command, sizeof(command),
@@ -77,7 +77,7 @@ esp_err_t ir_camera_init(void)
         return err;
     }
 
-    err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
+    err = sensor_i2c_bus_lock_as(SENSOR_I2C_USER_CAMERA, pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
     if (err != ESP_OK) return err;
     err = i2c_master_probe(s_bus, IR_CAMERA_I2C_ADDRESS, IR_CAMERA_TRANSFER_TIMEOUT_MS);
     sensor_i2c_bus_unlock();
@@ -125,7 +125,7 @@ esp_err_t ir_camera_read(ir_camera_state_t *state)
     }
 
     const uint8_t position_register = IR_CAMERA_REGISTER_POSITION;
-    esp_err_t err = sensor_i2c_bus_lock(pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
+    esp_err_t err = sensor_i2c_bus_lock_as(SENSOR_I2C_USER_CAMERA, pdMS_TO_TICKS(IR_CAMERA_TRANSFER_TIMEOUT_MS));
     if (err != ESP_OK) return err;
 
     err = i2c_master_transmit(s_device, &position_register, sizeof(position_register),

@@ -1,6 +1,8 @@
 # Camera and IMU integration status
 
-Updated 1 November 2026 on `imu-addon`, based on local `main` at `bcd82a1`.
+Updated 6 November 2026 for `nxt12-imu-integration`; earlier camera observations below retain their original scope.
+
+**Latest game result:** the user reports basic motion now seems to work in Mario Kart Wii through Dolphin + DolphinBar mode 4 with the default MotionPlus-off image. This validates basic standard Wii Remote accelerometer motion in that setup, not full gameplay, real Wii/vWii motion, simultaneous camera/IMU hardware operation, or MotionPlus gameplay.
 
 The canonical implementation and test log is the [root plan](../plan.md); this file records camera/IMU-specific hardware observations and wiring.
 
@@ -8,9 +10,10 @@ The canonical implementation and test log is the [root plan](../plan.md); this f
 
 - The DFRobot SEN0158 camera uses ESP-IDF's native I2C master driver. There is no Arduino `Wire` API or DFRobot library dependency in the firmware.
 - Startup probes I2C address `0x58`, uses the DFRobot default initialization profile (`0x06=0x90`, `0x08=0xC0`, `0x1A=0x40`), and reads four raw X/Y points from each 16-byte frame.
-- The shared ESP32-WROOM I2C bus uses GPIO21 SDA / GPIO22 SCL at 100 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled; the BNO08x service is scheduled every 10 ms.
-- The existing virtual-button page now includes a live point plot and coordinate table. `GET /api/camera` returns `detected`, `available`, and four `{x,y}` values; the page refreshes these values every 120 ms.
-- The page also shows BNO08x roll, pitch, and yaw from `GET /api/imu`. The IMU is probed at `0x4B` and `0x4A`, matching the legacy tracker; the service requests the rotation vector at 100 Hz and converts its quaternion to Euler angles.
+- The shared ESP32-WROOM I2C bus uses GPIO21 SDA / GPIO22 SCL at 400 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled; the BNO08x service runs every 5 ms, draining up to eight pending packets per bus hold so the camera can share the bus.
+- The virtual-button page includes a live point plot and coordinate table. `GET /api/camera` returns `detected`, `available`, and four `{x,y}` values; camera/IMU web polling shares one bounded in-flight cycle with timeouts and hidden-page suppression.
+- The page also shows BNO08x roll, pitch, and yaw from `GET /api/imu`. The IMU is probed at `0x4B` and `0x4A`; the service requests rotation vector at 50 Hz and gravity-inclusive acceleration at 100 Hz, with stall recovery. Standard Wii Remote HID reports carry live acceleration.
+- Optional MotionPlus uses calibrated gyro data at 100 Hz with `-DNEXTMOTE_ENABLE_MOTION_PLUS=1`. It is off by default and bench stress-tested, not game-validated.
 - Camera points are passed into the IR portion of HID report `0x33` on the pointer branch. Both axes are mirrored in HID only; the camera plot continues to show raw sensor coordinates.
 - Camera startup is optional. If no device responds at `0x58`, initialization logs a warning, publishes `detected:false`, and continues. The shared bus remains initialized so an IMU connected without a camera can still be probed.
 - Read failures are logged and do not stop the Bluetooth HID or web controller.
@@ -37,9 +40,11 @@ I later pressed DolphinBar SYNC, connected nextMote to Dolphin, and confirmed th
 
 The legacy `espWiimote` project used the SparkFun BNO08x Arduino library with reset on GPIO26, no INT wire, a 10 ms rotation-vector interval, and address fallback `0x4B`/`0x4A`. The ESP-IDF `imu-addon` branch uses the `rinku404/bno085` ESP-IDF component instead. This component requires the active-low INT/data-ready pin, so the current wiring adds BNO INT → GPIO27 while keeping RST → GPIO26.
 
-The camera and BNO share one ESP-IDF I2C master on GPIO21/22. The bus lock keeps the camera's register-select/frame read together and serializes that transfer with BNO SH-2 service transactions. Camera initialization failure does not tear down the shared bus.
+The camera and BNO share one ESP-IDF I2C master on GPIO21/22. The bus lock keeps the camera's register-select/frame read together and serializes that transfer with BNO SH-2 service transactions. Camera initialization failure does not tear down the shared bus. The camera device runs at 100 kHz and the BNO at 400 kHz on that bus.
 
-`GET /api/imu` returns `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`. The web page displays the three angles and a rotating orientation cube. With the camera disconnected, the camera panel may report not detected while the IMU panel can still report readings. This branch is for orientation display/testing: BNO acceleration is not yet incorporated into Wii Remote HID accelerometer bytes.
+Camera and IMU together were user-confirmed in Mario Kart Wii (Dolphin + DolphinBar, M+ build): steady finger cursor with live motion. Two firmware fixes were needed: the IMU service delay rounded to 0 ticks at 100 Hz (the task busy-spun on the bus lock), and the I2C interrupt now lives on core 1, away from Bluetooth/Wi-Fi, which had stretched long BNO packet reads under game traffic until camera lock waits hit the 100 ms timeout. `GET /api/bus` reports per-user lock wait/hold timing and IMU packet times (`?reset=1` returns then clears).
+
+`GET /api/imu` returns detection/orientation, acceleration freshness/count/raw HID values, `recoveries`, `gyro_samples`, `motion_plus_active`, `hid_data_sent`, and `hid_send_failures`. The web page displays the three angles and a rotating orientation cube. With the camera disconnected, the camera panel may report not detected while the IMU panel can still report readings. Unlike the original orientation-only `imu-addon`, `nxt12-imu-integration` sends gravity-inclusive BNO acceleration in Wii Remote HID reports, with basic motion user-confirmed in Mario Kart Wii through Dolphin + DolphinBar. See [motion integration](./wiimote-hid-test/README.md#standard-wii-remote-motion-integration) for encoding, cadence, fallback, and remaining acceptance checks.
 
 ### IMU-only wiring for the test
 
@@ -63,11 +68,11 @@ The native driver implements the sensor protocol and bit layout documented by DF
 ## Not implemented or not verified
 
 - Repeated/long-term operation, camera connection when it is absent at ESP32 startup, 5 V plus level-shifter wiring, and combined camera/MPU operation have not been tested. Power cycling the camera after successful initialization was reported to clear and restore detection.
-- I previously found that the camera and motion sensor each worked separately in the legacy setup, but they were not tested together. The `imu-addon` branch now includes BNO08x orientation acquisition and web display; current-hardware testing is still pending.
+- Camera and IMU were previously checked separately in the legacy setup. Current ESP-IDF hardware now has user-confirmed BNO08x web orientation and basic Mario Kart motion through Dolphin + DolphinBar on `nxt12-imu-integration`; simultaneous physical camera/IMU operation remains unverified.
 - Raw camera points are sent in HID report `0x33` on the pointer branch. After the mirrored-axis build was flashed, I confirmed that both pointer and buttons work in Wii Sports and Mario Kart, with pointer directions corrected. The pointer remains twitchy; smoothing, other games, and long-duration behavior remain unverified. A later API sample showed `available:true` but all points empty, so coordinate reporting may be intermittent.
 - No calibration, filtering, smoothing, point association, or higher-level tracking is implemented.
 - The shared sensor I2C bus owns port 0 on GPIO21/22. Additional sensors must use this bus rather than initialize a second master on those pins; simultaneous camera/BNO hardware operation remains unverified.
-- Accelerometer values remain stationary placeholders. No camera coordinate transform, smoothing, calibration, or point association is implemented.
+- Accelerometer values are live on `nxt12-imu-integration`, with neutral fallback if samples are absent, invalid, or older than 250 ms. HID camera axes are mirrored; no smoothing, calibration, or point association is implemented.
 
 ## Camera-only wiring
 
@@ -95,4 +100,4 @@ idf.py build
 
 Open the nextMote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons; the BNO08x orientation panel shows roll/pitch/yaw and a rotating cube. Inspect `/api/camera` for IR points and `/api/imu` for IMU state and Euler angles. For an IMU-only check, disconnect the camera and follow the BNO08x wiring in [ASSEMBLY_GUIDE.html](./ASSEMBLY_GUIDE.html).
 
-The firmware build and web support are implemented. Camera acquisition at 3.3 V is verified. BNO08x hardware on the current ESP32 wiring, the new INT=GPIO27 connection, and combined camera/IMU operation still require testing.
+Camera acquisition at 3.3 V, BNO08x web orientation with INT=GPIO27, and basic accelerometer motion in Mario Kart Wii through Dolphin + DolphinBar are verified by the recorded bench/user observations. Combined camera/IMU hardware operation, real Wii/vWii motion, and optional MotionPlus gameplay still require testing.
