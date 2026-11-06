@@ -799,6 +799,28 @@ static void start_http_server(void)
     ESP_LOGI(TAG, "HTTP server ready: http://" IPSTR "/", IP2STR(&info.ip));
 }
 
+/* Wi-Fi shares one 2.4 GHz radio with Bluetooth Classic. A 20 MHz channel
+ * leaves more of the band free for Bluetooth hopping. Set before esp_wifi_start(). */
+static void configure_wifi_bandwidth(void)
+{
+    esp_err_t err = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20);
+    ESP_LOGI(TAG, "Wi-Fi bandwidth 20 MHz: %s", esp_err_to_name(err));
+}
+
+/* Applied once associated so the coexistence scheduler is active; keeps the
+ * station from sleeping through buffered frames for the web page. */
+static void configure_wifi_power_save(void)
+{
+    esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi power save off rejected (%s); keeping minimum modem sleep",
+                 esp_err_to_name(err));
+        (void)esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi power save: off");
+    }
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     (void)arg;
@@ -806,10 +828,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         ESP_LOGI(TAG, "Configured Wi-Fi SSID: %s", CONFIG_EXAMPLE_WIFI_SSID);
         ESP_LOGI(TAG, "Connecting to configured Wi-Fi network");
-        ESP_ERROR_CHECK(esp_wifi_connect());
+        esp_err_t err = esp_wifi_connect();
+        if (err != ESP_OK) ESP_LOGW(TAG, "esp_wifi_connect: %s", esp_err_to_name(err));
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *event = event_data;
         ESP_LOGI(TAG, "Associated with AP channel=%u auth=%u", event->channel, event->authmode);
+        configure_wifi_power_save();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *event = event_data;
         ESP_LOGW(TAG, "Wi-Fi disconnect reason=%u", event->reason);
@@ -868,6 +892,7 @@ void wiimote_web_start(void)
     wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    configure_wifi_bandwidth();
     ESP_LOGI(TAG, "Connecting to configured Wi-Fi network");
     ESP_ERROR_CHECK(esp_wifi_start());
 #endif
