@@ -16,7 +16,9 @@
 #include "esp_timer.h"
 #include "esp_wifiemote.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/portmacro.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "wiimote_commands.h"
@@ -44,6 +46,11 @@ static esp_hidd_app_param_t s_app;
 static esp_hidd_qos_param_t s_qos;
 static esp_timer_handle_t s_sync_pairing_timer;
 static esp_timer_handle_t s_reconnect_timer;
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+static esp_timer_handle_t s_connection_operation_timer;
+#define WIIMOTE_CONNECTION_OPERATION_RETRY_MS 2000U
+#define WIIMOTE_CONNECTION_OPERATION_MAX_RETRY_MS 8000U
+#endif
 static portMUX_TYPE s_sync_pairing_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_sync_pairing_active;
 static portMUX_TYPE s_reconnect_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -52,13 +59,34 @@ static bool s_last_host_valid;
 static bool s_last_host_persisted;
 static bool s_reconnect_paused;
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-static bool s_sync_after_disconnect_pending;
-static bool s_sync_after_unplug_pending;
-static bool s_sync_after_unplug_general;
-static bool s_sync_after_unplug_disconnect_pending;
-static bool s_sync_after_bond_remove_pending;
-static bool s_sync_after_bond_remove_general;
-static esp_bd_addr_t s_sync_after_bond_remove_host;
+typedef enum {
+    CONNECTION_OP_IDLE,
+    CONNECTION_OP_PAIR_RESTARTING_BLUEDROID,
+    CONNECTION_OP_PAIR_OPENING_WINDOW,
+    CONNECTION_OP_PAIR_FAILED,
+    CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID,
+    CONNECTION_OP_RECONNECT_CONNECTING,
+    CONNECTION_OP_RECONNECT_FAILED,
+    CONNECTION_OP_SYNC_REARM_DISCONNECTING,
+    CONNECTION_OP_SYNC_REARM_FAILED,
+} connection_operation_state_t;
+static connection_operation_state_t s_connection_operation;
+static bool s_connection_operation_general;
+static esp_bd_addr_t s_connection_operation_host;
+static uint32_t s_connection_operation_retry_ms;
+static SemaphoreHandle_t s_pair_bond_remove_done;
+static SemaphoreHandle_t s_pair_vc_unplug_done;
+static esp_bd_addr_t s_pair_bond_remove_target;
+static esp_bt_status_t s_pair_bond_remove_status;
+static esp_hidd_status_t s_pair_vc_unplug_status;
+static esp_hidd_connection_state_t s_pair_vc_unplug_conn_status;
+static bool s_pair_bond_remove_pending;
+static bool s_pair_vc_unplug_pending;
+static bool s_bluetooth_stack_restart_active;
+#if CONFIG_BT_SDP_COMMON_ENABLED
+static SemaphoreHandle_t s_pair_sdp_deinit_done;
+static esp_sdp_status_t s_pair_sdp_deinit_status;
+#endif
 #endif
 static uint32_t s_reconnect_delay_ms = WIIMOTE_RECONNECT_INITIAL_DELAY_MS;
 static portMUX_TYPE s_device_id_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -66,6 +94,21 @@ static bool s_device_id_record_ready;
 static esp_bluetooth_sdp_record_t s_device_id_record;
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
 static void maybe_arm_upstream_discovery(const char *reason);
+#endif
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+static connection_operation_state_t connection_operation_snapshot(
+    esp_bd_addr_t host, bool *general_discoverable);
+static esp_err_t resume_connection_operation(void);
+static void connection_operation_timeout(void *arg);
+static void on_gap_event(esp_bt_gap_cb_event_t event,
+                         esp_bt_gap_cb_param_t *param);
+static void on_hid_event(esp_hidd_cb_event_t event,
+                         esp_hidd_cb_param_t *param);
+static esp_err_t request_saved_host_connection(const esp_bd_addr_t host);
+static esp_err_t request_bluetooth_stack_restart(
+    connection_operation_state_t state, const esp_bd_addr_t host,
+    bool general_discoverable);
+static void bluetooth_stack_restart_task(void *arg);
 #endif
 
 /* Match the explicit startup CoD in the upstream real-Wii revision. */
@@ -512,12 +555,36 @@ static void on_sdp_event(esp_sdp_cb_event_t event, esp_sdp_cb_param_t *param)
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
             maybe_arm_upstream_discovery("Device ID ready");
 #endif
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+            connection_operation_state_t operation =
+                connection_operation_snapshot(NULL, NULL);
+            if (operation == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID ||
+                operation == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+                esp_err_t resume_err = resume_connection_operation();
+                if (resume_err != ESP_OK &&
+                    resume_err != ESP_ERR_INVALID_STATE) {
+                    ESP_LOGE(TAG, "Could not continue Bluetooth restart after SDP ready: %s",
+                             esp_err_to_name(resume_err));
+                }
+            }
+#endif
         } else {
             ESP_LOGE(TAG, "Nintendo Device ID SDP record creation failed: status=%d",
                      param->create_record.status);
         }
         break;
     }
+    case ESP_SDP_DEINIT_EVT:
+        set_device_id_record_ready(false);
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+        s_pair_sdp_deinit_status = param->deinit.status;
+        if (s_pair_sdp_deinit_done &&
+            xSemaphoreGive(s_pair_sdp_deinit_done) != pdTRUE) {
+            ESP_LOGE(TAG, "Could not signal SDP deinitialization completion");
+        }
+#endif
+        ESP_LOGI(TAG, "SDP deinitialized result=%d", param->deinit.status);
+        break;
     default:
         break;
     }
@@ -562,8 +629,732 @@ static void close_sync_pairing_window(const char *reason)
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
 static esp_err_t start_sync_pairing_window(bool general_discoverable);
 
-static esp_err_t queue_virtual_cable_unplug(bool open_sync_after,
-                                             bool general_discoverable)
+static bool connection_operation_is_pair(connection_operation_state_t state)
+{
+    switch (state) {
+    case CONNECTION_OP_PAIR_RESTARTING_BLUEDROID:
+    case CONNECTION_OP_PAIR_OPENING_WINDOW:
+    case CONNECTION_OP_PAIR_FAILED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool connection_operation_is_reconnect(connection_operation_state_t state)
+{
+    return state == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID ||
+           state == CONNECTION_OP_RECONNECT_CONNECTING ||
+           state == CONNECTION_OP_RECONNECT_FAILED;
+}
+
+static const char *connection_operation_phase_name(connection_operation_state_t state)
+{
+    switch (state) {
+    case CONNECTION_OP_PAIR_RESTARTING_BLUEDROID:
+        return "restarting-bluetooth";
+    case CONNECTION_OP_PAIR_OPENING_WINDOW: return "opening-window";
+    case CONNECTION_OP_PAIR_FAILED:
+    case CONNECTION_OP_RECONNECT_FAILED:
+    case CONNECTION_OP_SYNC_REARM_FAILED:
+        return "failed";
+    case CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID:
+        return "reconnect-restarting-bluetooth";
+    case CONNECTION_OP_RECONNECT_CONNECTING:
+        return "reconnect-connecting";
+    case CONNECTION_OP_SYNC_REARM_DISCONNECTING:
+        return "rearm-disconnecting";
+    case CONNECTION_OP_IDLE:
+    default:
+        return "idle";
+    }
+}
+
+static connection_operation_state_t connection_operation_snapshot(
+    esp_bd_addr_t host, bool *general_discoverable)
+{
+    portENTER_CRITICAL(&s_reconnect_mux);
+    connection_operation_state_t state = s_connection_operation;
+    if (host != NULL) {
+        memcpy(host, s_connection_operation_host,
+               sizeof(s_connection_operation_host));
+    }
+    if (general_discoverable != NULL) {
+        *general_discoverable = s_connection_operation_general;
+    }
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    return state;
+}
+
+static bool bluetooth_stack_restart_active_snapshot(void)
+{
+    portENTER_CRITICAL(&s_reconnect_mux);
+    bool active = s_bluetooth_stack_restart_active;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    return active;
+}
+
+static void set_bluetooth_stack_restart_active(bool active)
+{
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_bluetooth_stack_restart_active = active;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+}
+
+static void set_stack_bond_remove_pending(const esp_bd_addr_t host,
+                                          bool pending)
+{
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_pair_bond_remove_pending = pending;
+    if (pending && host != NULL) {
+        memcpy(s_pair_bond_remove_target, host,
+               sizeof(s_pair_bond_remove_target));
+    } else if (!pending) {
+        memset(s_pair_bond_remove_target, 0,
+               sizeof(s_pair_bond_remove_target));
+    }
+    portEXIT_CRITICAL(&s_reconnect_mux);
+}
+
+static bool stack_bond_remove_pending_for_peer(const esp_bd_addr_t host)
+{
+    portENTER_CRITICAL(&s_reconnect_mux);
+    static const esp_bd_addr_t zero_address = {0};
+    bool any_peer = memcmp(s_pair_bond_remove_target, zero_address,
+                           sizeof(s_pair_bond_remove_target)) == 0;
+    bool pending = s_pair_bond_remove_pending &&
+                   (any_peer ||
+                    memcmp(s_pair_bond_remove_target, host,
+                           sizeof(s_pair_bond_remove_target)) == 0);
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    return pending;
+}
+
+static void connection_operation_cancel_watchdog(void)
+{
+    if (!s_connection_operation_timer ||
+        !esp_timer_is_active(s_connection_operation_timer)) {
+        return;
+    }
+    esp_err_t err = esp_timer_stop(s_connection_operation_timer);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Could not stop connection-operation watchdog: %s",
+                 esp_err_to_name(err));
+    }
+}
+
+static esp_err_t connection_operation_arm_watchdog(void)
+{
+    if (!s_connection_operation_timer) {
+        ESP_LOGE(TAG, "Connection-operation watchdog is not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    connection_operation_cancel_watchdog();
+    portENTER_CRITICAL(&s_reconnect_mux);
+    uint32_t delay_ms = s_connection_operation_retry_ms;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    if (delay_ms == 0) delay_ms = WIIMOTE_CONNECTION_OPERATION_RETRY_MS;
+    esp_err_t err = esp_timer_start_once(s_connection_operation_timer,
+                                         (uint64_t)delay_ms * 1000ULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not arm connection-operation watchdog: %s",
+                 esp_err_to_name(err));
+    } else {
+        uint32_t next_delay = delay_ms * 2U;
+        portENTER_CRITICAL(&s_reconnect_mux);
+        s_connection_operation_retry_ms =
+            next_delay > WIIMOTE_CONNECTION_OPERATION_MAX_RETRY_MS
+                ? WIIMOTE_CONNECTION_OPERATION_MAX_RETRY_MS : next_delay;
+        portEXIT_CRITICAL(&s_reconnect_mux);
+    }
+    return err;
+}
+
+static void connection_operation_set_state(connection_operation_state_t state)
+{
+    connection_operation_cancel_watchdog();
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_connection_operation = state;
+    if (state == CONNECTION_OP_IDLE) {
+        s_connection_operation_general = false;
+        memset(s_connection_operation_host, 0,
+               sizeof(s_connection_operation_host));
+        s_connection_operation_retry_ms = WIIMOTE_CONNECTION_OPERATION_RETRY_MS;
+    }
+    portEXIT_CRITICAL(&s_reconnect_mux);
+
+    wiimote_web_set_pairing_phase(
+        connection_operation_is_pair(state)
+            ? connection_operation_phase_name(state) : "idle");
+    wiimote_web_set_manual_reconnect_pending(
+        connection_operation_is_reconnect(state));
+}
+
+static void connection_operation_begin(connection_operation_state_t state,
+                                       const esp_bd_addr_t host,
+                                       bool general_discoverable)
+{
+    connection_operation_cancel_watchdog();
+    portENTER_CRITICAL(&s_reconnect_mux);
+    connection_operation_state_t previous_state = s_connection_operation;
+    s_connection_operation = state;
+    s_connection_operation_general = general_discoverable;
+    memcpy(s_connection_operation_host, host,
+           sizeof(s_connection_operation_host));
+    bool same_flow =
+        (connection_operation_is_pair(previous_state) &&
+         connection_operation_is_pair(state)) ||
+        (connection_operation_is_reconnect(previous_state) &&
+         connection_operation_is_reconnect(state)) ||
+        ((previous_state == CONNECTION_OP_SYNC_REARM_DISCONNECTING ||
+          previous_state == CONNECTION_OP_SYNC_REARM_FAILED) &&
+         (state == CONNECTION_OP_SYNC_REARM_DISCONNECTING ||
+          state == CONNECTION_OP_SYNC_REARM_FAILED));
+    if (!same_flow) {
+        s_connection_operation_retry_ms =
+            WIIMOTE_CONNECTION_OPERATION_RETRY_MS;
+    }
+    portEXIT_CRITICAL(&s_reconnect_mux);
+
+    wiimote_web_set_pairing_phase(
+        connection_operation_is_pair(state)
+            ? connection_operation_phase_name(state) : "idle");
+    wiimote_web_set_manual_reconnect_pending(
+        connection_operation_is_reconnect(state));
+}
+
+static esp_err_t start_pair_window_after_release(const esp_bd_addr_t host,
+                                                  bool general_discoverable)
+{
+    char peer[18];
+    esp_bd_addr_t printable_host;
+    memcpy(printable_host, host, sizeof(printable_host));
+    ESP_LOGI(TAG, "HOST_SWITCH_OLD_HOST_RELEASED peer=%s",
+             wiimote_bt_address_string(printable_host, peer));
+    clear_last_host();
+    connection_operation_set_state(CONNECTION_OP_PAIR_OPENING_WINDOW);
+    esp_err_t err = start_sync_pairing_window(general_discoverable);
+    if (err != ESP_OK) {
+        connection_operation_set_state(CONNECTION_OP_PAIR_FAILED);
+        ESP_LOGE(TAG, "Could not open SYNC after saved host release: %s",
+                 esp_err_to_name(err));
+        (void)connection_operation_arm_watchdog();
+        return err;
+    }
+    connection_operation_set_state(CONNECTION_OP_IDLE);
+    return ESP_OK;
+}
+
+static bool bluetooth_address_is_zero(const esp_bd_addr_t address)
+{
+    static const esp_bd_addr_t zero_address = {0};
+    return memcmp(address, zero_address, sizeof(zero_address)) == 0;
+}
+
+static esp_err_t remove_bond_and_wait(const esp_bd_addr_t host)
+{
+    bool bonded = false;
+    esp_err_t err = is_bonded_peer(host, &bonded);
+    if (err != ESP_OK || !bonded) return err;
+    if (!s_pair_bond_remove_done) return ESP_ERR_INVALID_STATE;
+
+    while (xSemaphoreTake(s_pair_bond_remove_done, 0) == pdTRUE) {
+    }
+    set_stack_bond_remove_pending(host, true);
+
+    esp_bd_addr_t removal_host;
+    memcpy(removal_host, host, sizeof(removal_host));
+    err = esp_bt_gap_remove_bond_device(removal_host);
+    if (err != ESP_OK) {
+        set_stack_bond_remove_pending(host, false);
+        ESP_LOGE(TAG, "Could not request Bluetooth bond removal: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
+
+    if (xSemaphoreTake(s_pair_bond_remove_done,
+                       pdMS_TO_TICKS(5000)) != pdTRUE) {
+        set_stack_bond_remove_pending(host, false);
+        ESP_LOGW(TAG, "Timed out waiting for Bluetooth bond-removal callback");
+    } else {
+        set_stack_bond_remove_pending(host, false);
+        if (s_pair_bond_remove_status != ESP_BT_STATUS_SUCCESS) {
+            ESP_LOGW(TAG, "Bluetooth bond-removal callback status=%u",
+                     (unsigned)s_pair_bond_remove_status);
+        }
+    }
+
+    bonded = false;
+    err = is_bonded_peer(host, &bonded);
+    if (err != ESP_OK) return err;
+    if (bonded) {
+        ESP_LOGE(TAG, "Bluetooth bond remains after targeted removal");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t remove_pair_bonds(const esp_bd_addr_t saved_host)
+{
+    if (!bluetooth_address_is_zero(saved_host)) {
+        esp_err_t err = remove_bond_and_wait(saved_host);
+        if (err != ESP_OK) return err;
+    }
+
+    int bond_count = esp_bt_gap_get_bond_device_num();
+    if (bond_count < 0) {
+        ESP_LOGE(TAG, "Could not read Bluetooth bond count");
+        return ESP_FAIL;
+    }
+    if (bond_count == 0) return ESP_OK;
+
+    esp_bd_addr_t *bonded_hosts =
+        calloc((size_t)bond_count, sizeof(*bonded_hosts));
+    if (!bonded_hosts) {
+        ESP_LOGE(TAG, "Could not allocate Bluetooth bond list");
+        return ESP_ERR_NO_MEM;
+    }
+
+    int listed = bond_count;
+    esp_err_t err = esp_bt_gap_get_bond_device_list(&listed, bonded_hosts);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not list Bluetooth bonds: %s", esp_err_to_name(err));
+        free(bonded_hosts);
+        return err;
+    }
+
+    for (int i = 0; i < listed; ++i) {
+        if (!bluetooth_address_is_zero(saved_host) &&
+            memcmp(bonded_hosts[i], saved_host, ESP_BD_ADDR_LEN) == 0) {
+            continue;
+        }
+        err = remove_bond_and_wait(bonded_hosts[i]);
+        if (err != ESP_OK) break;
+    }
+    free(bonded_hosts);
+    return err;
+}
+
+static esp_err_t release_pair_virtual_cable(void)
+{
+    esp_hidd_profile_status_t profile = {0};
+    esp_err_t err = esp_bt_hid_device_get_profile_status(&profile);
+    if (err != ESP_OK) return err;
+    if (profile.plug_vc_dev_num == 0) return ESP_OK;
+    if (!s_pair_vc_unplug_done || !s_pair_bond_remove_done) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    while (xSemaphoreTake(s_pair_vc_unplug_done, 0) == pdTRUE) {
+    }
+    while (xSemaphoreTake(s_pair_bond_remove_done, 0) == pdTRUE) {
+    }
+
+    esp_bd_addr_t host = {0};
+    (void)connection_operation_snapshot(host, NULL);
+    set_stack_bond_remove_pending(host, true);
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_pair_vc_unplug_pending = true;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+
+    err = esp_bt_hid_device_virtual_cable_unplug();
+    if (err != ESP_OK) {
+        portENTER_CRITICAL(&s_reconnect_mux);
+        s_pair_vc_unplug_pending = false;
+        portEXIT_CRITICAL(&s_reconnect_mux);
+        set_stack_bond_remove_pending(host, false);
+        return err;
+    }
+
+    if (xSemaphoreTake(s_pair_vc_unplug_done, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        portENTER_CRITICAL(&s_reconnect_mux);
+        s_pair_vc_unplug_pending = false;
+        portEXIT_CRITICAL(&s_reconnect_mux);
+        set_stack_bond_remove_pending(host, false);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (s_pair_vc_unplug_status != ESP_HIDD_SUCCESS ||
+        s_pair_vc_unplug_conn_status != ESP_HIDD_CONN_STATE_DISCONNECTED) {
+        set_stack_bond_remove_pending(host, false);
+        return ESP_FAIL;
+    }
+
+    bool bonded = false;
+    if (!bluetooth_address_is_zero(host)) {
+        err = is_bonded_peer(host, &bonded);
+        if (err != ESP_OK) {
+            set_stack_bond_remove_pending(host, false);
+            return err;
+        }
+    } else {
+        int bond_count = esp_bt_gap_get_bond_device_num();
+        if (bond_count < 0) {
+            set_stack_bond_remove_pending(host, false);
+            return ESP_FAIL;
+        }
+        bonded = bond_count > 0;
+    }
+
+    if (bonded &&
+        xSemaphoreTake(s_pair_bond_remove_done, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Timed out waiting for VCU-triggered bond removal");
+    }
+    set_stack_bond_remove_pending(host, false);
+    ESP_LOGI(TAG, "Pair virtual cable released before Bluetooth stack restart");
+    return ESP_OK;
+}
+
+static esp_err_t request_bluetooth_stack_restart(
+    connection_operation_state_t state, const esp_bd_addr_t host,
+    bool general_discoverable)
+{
+    if (state != CONNECTION_OP_PAIR_RESTARTING_BLUEDROID &&
+        state != CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    stop_hid_reconnect_timer();
+    close_sync_pairing_window("Bluetooth host restart requested");
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_reconnect_paused = true;
+    bool restart_active = s_bluetooth_stack_restart_active;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    connection_operation_begin(state, host, general_discoverable);
+    if (restart_active) return ESP_OK;
+
+    set_bluetooth_stack_restart_active(true);
+    BaseType_t task_result = xTaskCreate(
+        bluetooth_stack_restart_task, "bt_host_restart", 6144, NULL, 5, NULL);
+    if (task_result != pdPASS) {
+        set_bluetooth_stack_restart_active(false);
+        connection_operation_set_state(
+            state == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID
+                ? CONNECTION_OP_PAIR_FAILED : CONNECTION_OP_RECONNECT_FAILED);
+        ESP_LOGE(TAG, "Could not create Bluetooth stack restart task");
+        (void)connection_operation_arm_watchdog();
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t resume_connection_operation(void)
+{
+    esp_bd_addr_t host = {0};
+    bool general_discoverable = false;
+    connection_operation_state_t state =
+        connection_operation_snapshot(host, &general_discoverable);
+
+    switch (state) {
+    case CONNECTION_OP_PAIR_RESTARTING_BLUEDROID:
+        if (bluetooth_stack_restart_active_snapshot()) return ESP_OK;
+        if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+            return request_bluetooth_stack_restart(
+                CONNECTION_OP_PAIR_RESTARTING_BLUEDROID, host,
+                general_discoverable);
+        }
+        if (!wiimote_sdp_hid_record_is_ready()) return ESP_ERR_INVALID_STATE;
+#if CONFIG_BT_SDP_COMMON_ENABLED
+        if (!device_id_record_is_ready()) return ESP_ERR_INVALID_STATE;
+#endif
+        return start_pair_window_after_release(host, general_discoverable);
+    case CONNECTION_OP_PAIR_OPENING_WINDOW: {
+        esp_err_t err = start_sync_pairing_window(general_discoverable);
+        if (err == ESP_OK) connection_operation_set_state(CONNECTION_OP_IDLE);
+        return err;
+    }
+    case CONNECTION_OP_PAIR_FAILED:
+        return request_bluetooth_stack_restart(
+            CONNECTION_OP_PAIR_RESTARTING_BLUEDROID, host,
+            general_discoverable);
+    case CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID:
+        if (bluetooth_stack_restart_active_snapshot()) return ESP_OK;
+        if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+            return request_bluetooth_stack_restart(
+                CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID, host, false);
+        }
+        if (!wiimote_sdp_hid_record_is_ready()) return ESP_ERR_INVALID_STATE;
+#if CONFIG_BT_SDP_COMMON_ENABLED
+        if (!device_id_record_is_ready()) return ESP_ERR_INVALID_STATE;
+#endif
+        return request_saved_host_connection(host);
+    case CONNECTION_OP_RECONNECT_CONNECTING:
+    case CONNECTION_OP_RECONNECT_FAILED: {
+        esp_hidd_profile_status_t profile = {0};
+        esp_err_t err = esp_bt_hid_device_get_profile_status(&profile);
+        if (err != ESP_OK) return err;
+        if (profile.conn_num != 0 || wiimote_state_is_connected()) {
+            connection_operation_set_state(CONNECTION_OP_IDLE);
+            stop_hid_reconnect_timer();
+            return ESP_OK;
+        }
+        if (state == CONNECTION_OP_RECONNECT_FAILED) {
+            return request_bluetooth_stack_restart(
+                CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID, host, false);
+        }
+        return request_saved_host_connection(host);
+    }
+    case CONNECTION_OP_SYNC_REARM_DISCONNECTING: {
+        esp_hidd_profile_status_t profile = {0};
+        esp_err_t err = esp_bt_hid_device_get_profile_status(&profile);
+        if (err != ESP_OK) return err;
+        if (profile.conn_num == 0) {
+            wiimote_state_close();
+            wiimote_web_set_hid_connected(false);
+            err = start_sync_pairing_window(false);
+            if (err == ESP_OK) connection_operation_set_state(CONNECTION_OP_IDLE);
+            else {
+                connection_operation_set_state(CONNECTION_OP_SYNC_REARM_FAILED);
+                (void)connection_operation_arm_watchdog();
+            }
+            return err;
+        }
+        err = esp_bt_hid_device_disconnect();
+        if (err == ESP_OK) (void)connection_operation_arm_watchdog();
+        else {
+            connection_operation_set_state(CONNECTION_OP_SYNC_REARM_FAILED);
+            (void)connection_operation_arm_watchdog();
+        }
+        return err;
+    }
+    case CONNECTION_OP_SYNC_REARM_FAILED:
+        if (wiimote_state_is_connected()) {
+            connection_operation_begin(CONNECTION_OP_SYNC_REARM_DISCONNECTING,
+                                       host, false);
+            esp_err_t err = esp_bt_hid_device_disconnect();
+            (void)connection_operation_arm_watchdog();
+            return err;
+        }
+        {
+            esp_err_t err = start_sync_pairing_window(false);
+            if (err == ESP_OK) connection_operation_set_state(CONNECTION_OP_IDLE);
+            else (void)connection_operation_arm_watchdog();
+            return err;
+        }
+    case CONNECTION_OP_IDLE:
+    default:
+        return ESP_ERR_NOT_FOUND;
+    }
+}
+
+static void connection_operation_timeout(void *arg)
+{
+    (void)arg;
+    connection_operation_state_t state =
+        connection_operation_snapshot(NULL, NULL);
+    if (state == CONNECTION_OP_IDLE) return;
+    if ((state == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID ||
+         state == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) &&
+        bluetooth_stack_restart_active_snapshot()) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "Connection operation watchdog phase=%s; reconciling",
+             connection_operation_phase_name(state));
+    esp_err_t err = resume_connection_operation();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Connection operation retry failed: %s",
+                 esp_err_to_name(err));
+    }
+
+    state = connection_operation_snapshot(NULL, NULL);
+    if (state != CONNECTION_OP_IDLE &&
+        !esp_timer_is_active(s_connection_operation_timer)) {
+        (void)connection_operation_arm_watchdog();
+    }
+}
+
+static void bluetooth_stack_restart_failed(const char *phase, esp_err_t err)
+{
+    connection_operation_state_t state =
+        connection_operation_snapshot(NULL, NULL);
+    set_bluetooth_stack_restart_active(false);
+    ESP_LOGE(TAG, "Bluetooth stack restart failed at %s: %s",
+             phase, esp_err_to_name(err));
+    if (state == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID) {
+        connection_operation_set_state(CONNECTION_OP_PAIR_FAILED);
+    } else if (state == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+        connection_operation_set_state(CONNECTION_OP_RECONNECT_FAILED);
+    }
+    (void)connection_operation_arm_watchdog();
+}
+
+static void bluetooth_stack_restart_task(void *arg)
+{
+    (void)arg;
+    esp_bd_addr_t host = {0};
+    bool general_discoverable = false;
+    connection_operation_state_t state =
+        connection_operation_snapshot(host, &general_discoverable);
+    bool pair_restart = state == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID;
+    bool reconnect_restart =
+        state == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID;
+    if (!pair_restart && !reconnect_restart) {
+        bluetooth_stack_restart_failed("operation validation",
+                                       ESP_ERR_INVALID_STATE);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    bool pair_bonds_removed = false;
+    if (pair_restart) {
+        esp_err_t unplug_err = release_pair_virtual_cable();
+        if (unplug_err != ESP_OK) {
+            ESP_LOGW(TAG, "Pair virtual-cable release did not complete before restart: %s",
+                     esp_err_to_name(unplug_err));
+        }
+        esp_err_t bond_err = remove_pair_bonds(host);
+        if (bond_err == ESP_OK) {
+            pair_bonds_removed = true;
+        } else {
+            ESP_LOGW(TAG, "Pair bond cleanup before Bluetooth restart was incomplete: %s",
+                     esp_err_to_name(bond_err));
+        }
+    }
+
+    wiimote_state_close();
+    wiimote_web_set_hid_connected(false);
+    stop_hid_reconnect_timer();
+    close_sync_pairing_window("Bluetooth host restart");
+    esp_err_t err = wiimote_discovery_set_rotation(false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Inquiry rotation stop before Bluetooth restart failed: %s",
+                 esp_err_to_name(err));
+    }
+
+#if CONFIG_BT_SDP_COMMON_ENABLED
+    esp_sdp_protocol_status_t sdp_status = {0};
+    err = esp_sdp_get_protocol_status(&sdp_status);
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("SDP status", err);
+        vTaskDelete(NULL);
+        return;
+    }
+    if (sdp_status.sdp_inited) {
+        while (xSemaphoreTake(s_pair_sdp_deinit_done, 0) == pdTRUE) {
+        }
+        err = esp_sdp_deinit();
+        if (err != ESP_OK) {
+            bluetooth_stack_restart_failed("SDP deinit request", err);
+            vTaskDelete(NULL);
+            return;
+        }
+        if (xSemaphoreTake(s_pair_sdp_deinit_done,
+                           pdMS_TO_TICKS(7000)) != pdTRUE) {
+            bluetooth_stack_restart_failed("SDP deinit callback",
+                                           ESP_ERR_TIMEOUT);
+            vTaskDelete(NULL);
+            return;
+        }
+        if (s_pair_sdp_deinit_status != ESP_SDP_SUCCESS) {
+            bluetooth_stack_restart_failed("SDP deinit completion",
+                                           ESP_FAIL);
+            vTaskDelete(NULL);
+            return;
+        }
+    }
+#endif
+
+    err = esp_bluedroid_disable();
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("Bluedroid disable", err);
+        vTaskDelete(NULL);
+        return;
+    }
+    wiimote_sdp_clear_hid_ready();
+    set_device_id_record_ready(false);
+
+    err = esp_bluedroid_enable();
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("Bluedroid enable", err);
+        vTaskDelete(NULL);
+        return;
+    }
+    err = esp_bt_gap_register_callback(on_gap_event);
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("GAP callback registration", err);
+        vTaskDelete(NULL);
+        return;
+    }
+    err = esp_bt_hid_device_register_callback(on_hid_event);
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("HID callback registration", err);
+        vTaskDelete(NULL);
+        return;
+    }
+#if CONFIG_BT_SDP_COMMON_ENABLED
+    err = esp_sdp_register_callback(on_sdp_event);
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("SDP callback registration", err);
+        vTaskDelete(NULL);
+        return;
+    }
+#endif
+    err = esp_bt_gap_set_device_name(local_device_name);
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("device name", err);
+        vTaskDelete(NULL);
+        return;
+    }
+    err = apply_wiimote_cod();
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("Class of Device", err);
+        vTaskDelete(NULL);
+        return;
+    }
+    esp_bt_pin_type_t pin_type = ESP_BT_PIN_TYPE_VARIABLE;
+    esp_bt_pin_code_t empty_pin = {0};
+    err = esp_bt_gap_set_pin(pin_type, 0, empty_pin);
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("legacy PIN setup", err);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (pair_restart) {
+        if (!pair_bonds_removed) {
+            err = remove_pair_bonds(host);
+            if (err != ESP_OK) {
+                bluetooth_stack_restart_failed("Pair bond removal", err);
+                vTaskDelete(NULL);
+                return;
+            }
+        }
+        clear_last_host();
+    }
+
+    err = esp_bt_hid_device_init();
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("HID profile init", err);
+        vTaskDelete(NULL);
+        return;
+    }
+#if CONFIG_BT_SDP_COMMON_ENABLED
+    err = esp_sdp_init();
+    if (err != ESP_OK) {
+        bluetooth_stack_restart_failed("SDP init", err);
+        vTaskDelete(NULL);
+        return;
+    }
+#endif
+
+    set_bluetooth_stack_restart_active(false);
+    ESP_LOGI(TAG, "Bluetooth host restarted; waiting for HID and SDP registration");
+    err = resume_connection_operation();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Could not continue after Bluetooth host restart: %s",
+                 esp_err_to_name(err));
+    }
+    connection_operation_state_t final_state =
+        connection_operation_snapshot(NULL, NULL);
+    if (final_state != CONNECTION_OP_IDLE &&
+        !esp_timer_is_active(s_connection_operation_timer)) {
+        (void)connection_operation_arm_watchdog();
+    }
+    vTaskDelete(NULL);
+}
+
+static esp_err_t queue_virtual_cable_unplug(void)
 {
     esp_bd_addr_t host;
     if (!copy_last_host(host)) {
@@ -584,104 +1375,49 @@ static esp_err_t queue_virtual_cable_unplug(bool open_sync_after,
 
     stop_hid_reconnect_timer();
     portENTER_CRITICAL(&s_reconnect_mux);
-    if (open_sync_after &&
-        (s_sync_after_unplug_pending || s_sync_after_disconnect_pending ||
-         s_sync_after_bond_remove_pending)) {
-        portEXIT_CRITICAL(&s_reconnect_mux);
-        ESP_LOGW(TAG, "Pair request rejected while another host transition is pending");
-        return ESP_ERR_INVALID_STATE;
-    }
     s_reconnect_paused = true;
-    if (open_sync_after) {
-        s_sync_after_unplug_pending = true;
-        s_sync_after_unplug_general = general_discoverable;
-    }
     portEXIT_CRITICAL(&s_reconnect_mux);
 
-    close_sync_pairing_window(open_sync_after ? "host switch requested"
-                                               : "virtual-cable unplug requested");
+    close_sync_pairing_window("virtual-cable unplug requested");
     err = esp_bt_hid_device_virtual_cable_unplug();
     if (err != ESP_OK) {
         portENTER_CRITICAL(&s_reconnect_mux);
         s_reconnect_paused = false;
-        if (open_sync_after) {
-            s_sync_after_unplug_pending = false;
-            s_sync_after_unplug_general = false;
-            s_sync_after_unplug_disconnect_pending = false;
-        }
         portEXIT_CRITICAL(&s_reconnect_mux);
         ESP_LOGE(TAG, "Could not queue virtual-cable unplug: %s", esp_err_to_name(err));
         schedule_hid_reconnect("virtual-cable unplug request failed");
         return err;
     }
 
-    ESP_LOGW(TAG, "%s for saved HID host",
-             open_sync_after ? "HOST_SWITCH_VIRTUAL_CABLE_UNPLUG_REQUESTED"
-                             : "VIRTUAL_CABLE_UNPLUG_REQUESTED");
+    ESP_LOGW(TAG, "VIRTUAL_CABLE_UNPLUG_REQUESTED for saved HID host");
     return ESP_OK;
 }
 
 static esp_err_t request_sync_with_host_switch(bool general_discoverable)
 {
-    esp_bd_addr_t host;
-    if (!copy_last_host(host)) {
-        return start_sync_pairing_window(general_discoverable);
+    connection_operation_state_t state =
+        connection_operation_snapshot(NULL, NULL);
+    if (connection_operation_is_pair(state)) {
+        ESP_LOGW(TAG, "Resuming Pair host transition at phase=%s",
+                 connection_operation_phase_name(state));
+        return resume_connection_operation();
+    }
+    if (state != CONNECTION_OP_IDLE) {
+        return ESP_ERR_INVALID_STATE;
     }
 
-    bool bonded = false;
-    esp_err_t err = is_bonded_peer(host, &bonded);
-    if (err != ESP_OK) return err;
-    if (!bonded) {
-        if (wiimote_state_is_connected()) {
-            ESP_LOGE(TAG, "Cannot switch hosts: connected peer is not in the bond list");
-            return ESP_ERR_INVALID_STATE;
-        }
-        ESP_LOGW(TAG, "Saved host is no longer bonded; clearing it before pairing");
-        clear_last_host();
-        return start_sync_pairing_window(general_discoverable);
-    }
-
-    if (wiimote_state_is_connected()) {
-        stop_hid_reconnect_timer();
-        portENTER_CRITICAL(&s_reconnect_mux);
-        if (s_sync_after_unplug_pending || s_sync_after_disconnect_pending ||
-            s_sync_after_bond_remove_pending) {
-            portEXIT_CRITICAL(&s_reconnect_mux);
-            ESP_LOGW(TAG, "Pair request rejected while another host transition is pending");
-            return ESP_ERR_INVALID_STATE;
-        }
-        s_reconnect_paused = true;
-        s_sync_after_unplug_pending = true;
-        s_sync_after_unplug_general = general_discoverable;
-        s_sync_after_unplug_disconnect_pending = true;
-        portEXIT_CRITICAL(&s_reconnect_mux);
-
-        close_sync_pairing_window("host switch requested");
-        err = esp_bt_hid_device_disconnect();
-        if (err != ESP_OK) {
-            portENTER_CRITICAL(&s_reconnect_mux);
-            s_reconnect_paused = false;
-            s_sync_after_unplug_pending = false;
-            s_sync_after_unplug_general = false;
-            s_sync_after_unplug_disconnect_pending = false;
-            portEXIT_CRITICAL(&s_reconnect_mux);
-            ESP_LOGE(TAG, "Could not disconnect current HID host for Pair: %s",
-                     esp_err_to_name(err));
-            return err;
-        }
-
-        ESP_LOGW(TAG, "HOST_SWITCH_HID_DISCONNECT_REQUESTED for saved HID host");
-        return ESP_OK;
-    }
-
-    return queue_virtual_cable_unplug(true, general_discoverable);
+    esp_bd_addr_t host = {0};
+    (void)copy_last_host(host);
+    return request_bluetooth_stack_restart(
+        CONNECTION_OP_PAIR_RESTARTING_BLUEDROID, host,
+        general_discoverable);
 }
 #endif
 
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
 static esp_err_t request_virtual_cable_unplug(void)
 {
-    return queue_virtual_cable_unplug(false, false);
+    return queue_virtual_cable_unplug();
 }
 #endif
 
@@ -766,34 +1502,114 @@ static esp_err_t start_sync_pairing_window(bool general_discoverable)
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
 static esp_err_t request_sync_after_disconnect(void)
 {
+    if (connection_operation_snapshot(NULL, NULL) != CONNECTION_OP_IDLE) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!wiimote_state_is_connected()) {
         return start_sync_pairing_window(false);
     }
 
     stop_hid_reconnect_timer();
+    esp_bd_addr_t host = {0};
+    (void)copy_last_host(host);
     portENTER_CRITICAL(&s_reconnect_mux);
-    if (s_sync_after_disconnect_pending) {
+    if (s_connection_operation != CONNECTION_OP_IDLE) {
         portEXIT_CRITICAL(&s_reconnect_mux);
         return ESP_ERR_INVALID_STATE;
     }
-    s_sync_after_disconnect_pending = true;
+    memcpy(s_connection_operation_host, host, sizeof(s_connection_operation_host));
+    s_connection_operation_general = false;
+    s_connection_operation = CONNECTION_OP_SYNC_REARM_DISCONNECTING;
+    s_connection_operation_retry_ms = WIIMOTE_CONNECTION_OPERATION_RETRY_MS;
     s_reconnect_paused = true;
     portEXIT_CRITICAL(&s_reconnect_mux);
+    wiimote_web_set_pairing_phase("rearm-disconnecting");
+    wiimote_web_set_manual_reconnect_pending(false);
 
     close_sync_pairing_window("re-pair requested");
     esp_err_t err = esp_bt_hid_device_disconnect();
     if (err != ESP_OK) {
+        connection_operation_set_state(CONNECTION_OP_SYNC_REARM_FAILED);
         portENTER_CRITICAL(&s_reconnect_mux);
-        s_sync_after_disconnect_pending = false;
         s_reconnect_paused = false;
         portEXIT_CRITICAL(&s_reconnect_mux);
         ESP_LOGE(TAG, "Could not disconnect HID host for SYNC: %s",
                  esp_err_to_name(err));
+        (void)connection_operation_arm_watchdog();
         return err;
     }
 
+    (void)connection_operation_arm_watchdog();
     ESP_LOGW(TAG, "HID_DISCONNECT_FOR_SYNC_REQUESTED; preserving the bonded host");
     return ESP_OK;
+}
+
+static esp_err_t request_saved_host_connection(const esp_bd_addr_t host)
+{
+    esp_bd_addr_t target;
+    memcpy(target, host, sizeof(target));
+    connection_operation_state_t state =
+        connection_operation_snapshot(NULL, NULL);
+    if (connection_operation_is_reconnect(state)) {
+        connection_operation_set_state(CONNECTION_OP_RECONNECT_CONNECTING);
+    } else {
+        connection_operation_begin(CONNECTION_OP_RECONNECT_CONNECTING, target,
+                                   false);
+    }
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_reconnect_paused = false;
+    s_reconnect_delay_ms = WIIMOTE_RECONNECT_INITIAL_DELAY_MS;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    wiimote_web_set_reconnect_pending(true);
+
+    esp_err_t err = esp_bt_hid_device_connect(target);
+    if (err != ESP_OK) {
+        connection_operation_set_state(CONNECTION_OP_RECONNECT_FAILED);
+        ESP_LOGW(TAG, "Saved-host reconnect request failed: %s",
+                 esp_err_to_name(err));
+        (void)connection_operation_arm_watchdog();
+        return err;
+    }
+
+    char peer[18];
+    ESP_LOGI(TAG, "MANUAL_HID_RECONNECT_REQUESTED peer=%s",
+             wiimote_bt_address_string(target, peer));
+    (void)connection_operation_arm_watchdog();
+    return ESP_OK;
+}
+
+static esp_err_t request_saved_host_reconnect(void)
+{
+    if (sync_pairing_window_is_active()) return ESP_ERR_INVALID_STATE;
+    connection_operation_state_t operation =
+        connection_operation_snapshot(NULL, NULL);
+    if (connection_operation_is_reconnect(operation)) {
+        return resume_connection_operation();
+    }
+    if (operation != CONNECTION_OP_IDLE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_bd_addr_t host;
+    if (!copy_last_host(host)) return ESP_ERR_NOT_FOUND;
+
+    bool bonded = false;
+    esp_err_t err = is_bonded_peer(host, &bonded);
+    if (err != ESP_OK) return err;
+    if (!bonded) {
+        ESP_LOGE(TAG, "Saved host is not bonded; refusing Reconnect without Pair");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    stop_hid_reconnect_timer();
+    portENTER_CRITICAL(&s_reconnect_mux);
+    s_reconnect_paused = true;
+    portEXIT_CRITICAL(&s_reconnect_mux);
+    connection_operation_begin(CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID,
+                               host, false);
+    wiimote_web_set_reconnect_pending(true);
+    return request_bluetooth_stack_restart(
+        CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID, host, false);
 }
 #endif
 
@@ -900,46 +1716,18 @@ static void on_gap_event(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
     }
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
     case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT: {
-        esp_bd_addr_t pending_host = {0};
-        bool sync_after_bond_remove = false;
-        bool general_discoverable = false;
-        portENTER_CRITICAL(&s_reconnect_mux);
-        if (s_sync_after_bond_remove_pending &&
-            memcmp(param->remove_bond_dev_cmpl.bda,
-                   s_sync_after_bond_remove_host,
-                   sizeof(s_sync_after_bond_remove_host)) == 0) {
-            sync_after_bond_remove = true;
-            general_discoverable = s_sync_after_bond_remove_general;
-            memcpy(pending_host, s_sync_after_bond_remove_host,
-                   sizeof(pending_host));
-            s_sync_after_bond_remove_pending = false;
-            s_sync_after_bond_remove_general = false;
-            memset(s_sync_after_bond_remove_host, 0,
-                   sizeof(s_sync_after_bond_remove_host));
-        }
-        portEXIT_CRITICAL(&s_reconnect_mux);
-
         char peer[18];
         ESP_LOGI(TAG, "bond removal result=%u peer=%s",
                  (unsigned)param->remove_bond_dev_cmpl.status,
                  wiimote_bt_address_string(param->remove_bond_dev_cmpl.bda, peer));
-        if (!sync_after_bond_remove) break;
-        if (param->remove_bond_dev_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-            portENTER_CRITICAL(&s_reconnect_mux);
-            s_reconnect_paused = false;
-            portEXIT_CRITICAL(&s_reconnect_mux);
-            ESP_LOGE(TAG, "Could not remove previous host bond; Pair discovery was not opened");
-            schedule_hid_reconnect("saved host bond removal failed");
-            break;
-        }
-
-        ESP_LOGI(TAG, "HOST_SWITCH_BOND_REMOVED peer=%s",
-                 wiimote_bt_address_string(pending_host, peer));
-        clear_last_host();
-        esp_err_t err = start_sync_pairing_window(general_discoverable);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Could not open SYNC after saved host bond removal: %s",
-                     esp_err_to_name(err));
+        if (stack_bond_remove_pending_for_peer(
+                param->remove_bond_dev_cmpl.bda)) {
+            s_pair_bond_remove_status =
+                param->remove_bond_dev_cmpl.status;
+            if (s_pair_bond_remove_done &&
+                xSemaphoreGive(s_pair_bond_remove_done) != pdTRUE) {
+                ESP_LOGE(TAG, "Could not signal Bluetooth bond-removal completion");
+            }
         }
         break;
     }
@@ -959,44 +1747,76 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             ESP_ERROR_CHECK(esp_bt_hid_device_register_app(&s_app, &s_qos, &s_qos));
         }
         break;
-    case ESP_HIDD_REGISTER_APP_EVT:
+    case ESP_HIDD_REGISTER_APP_EVT: {
         ESP_LOGI(TAG, "HID SDP registration result=%d", param->register_app.status);
-        if (param->register_app.status == ESP_HIDD_SUCCESS) {
-            if (!wiimote_sdp_hid_record_is_ready()) {
-                ESP_LOGE(TAG, "HID registration did not produce a complete wiimote SDP record");
-                esp_err_t err = esp_bt_hid_device_unregister_app();
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "Could not unregister incomplete HID app: %s", esp_err_to_name(err));
-                }
-                break;
+        if (param->register_app.status != ESP_HIDD_SUCCESS) {
+            ESP_LOGE(TAG, "HID app registration failed: status=%d",
+                     param->register_app.status);
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+            connection_operation_state_t operation =
+                connection_operation_snapshot(NULL, NULL);
+            if (operation == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID) {
+                connection_operation_set_state(CONNECTION_OP_PAIR_FAILED);
+                (void)connection_operation_arm_watchdog();
+            } else if (operation == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+                connection_operation_set_state(CONNECTION_OP_RECONNECT_FAILED);
+                (void)connection_operation_arm_watchdog();
             }
-#if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
-            maybe_arm_upstream_discovery("HID app ready");
-#elif CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-            arm_bonded_host_reconnect("HID app ready");
-            ESP_LOGI(TAG, "READY identity=Nintendo RVL-CNT-01; bonded hosts reconnect automatically; use web SYNC to pair a new host");
-#else
-#if CONFIG_EXAMPLE_LIMITED_DISCOVERABLE
-            esp_err_t err = set_pairing_discoverability(true, false);
-#else
-            esp_err_t err = set_pairing_discoverability(true, true);
 #endif
+            break;
+        }
+        if (!wiimote_sdp_hid_record_is_ready()) {
+            ESP_LOGE(TAG, "HID registration did not produce a complete wiimote SDP record");
+            esp_err_t err = esp_bt_hid_device_unregister_app();
             if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Could not enable startup discoverability: %s",
+                ESP_LOGE(TAG, "Could not unregister incomplete HID app: %s",
                          esp_err_to_name(err));
             }
-            ESP_LOGI(TAG, "READY identity=Nintendo RVL-CNT-01; discoverable without web control");
-#endif
-            if (param->register_app.in_use) {
-                char peer[18];
-                save_last_host(param->register_app.bd_addr);
-                ESP_LOGI(TAG, "HID virtual cable host restored peer=%s",
-                         wiimote_bt_address_string(param->register_app.bd_addr, peer));
-            }
-            esp_bd_addr_t saved_host;
-            if (copy_last_host(saved_host)) schedule_hid_reconnect("HID app ready");
+            break;
         }
+        if (param->register_app.in_use) {
+            char peer[18];
+            save_last_host(param->register_app.bd_addr);
+            ESP_LOGI(TAG, "HID virtual cable host restored peer=%s",
+                     wiimote_bt_address_string(param->register_app.bd_addr, peer));
+        }
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+        connection_operation_state_t operation =
+            connection_operation_snapshot(NULL, NULL);
+        if (operation == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID ||
+            operation == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+            esp_err_t err = resume_connection_operation();
+            if (err == ESP_ERR_INVALID_STATE) {
+                (void)connection_operation_arm_watchdog();
+            } else if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Could not resume operation after Bluetooth restart: %s",
+                         esp_err_to_name(err));
+                (void)connection_operation_arm_watchdog();
+            }
+            break;
+        }
+#endif
+#if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
+        maybe_arm_upstream_discovery("HID app ready");
+#elif CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+        arm_bonded_host_reconnect("HID app ready");
+        ESP_LOGI(TAG, "READY identity=Nintendo RVL-CNT-01; bonded hosts reconnect automatically; use web SYNC to pair a new host");
+#else
+#if CONFIG_EXAMPLE_LIMITED_DISCOVERABLE
+        esp_err_t err = set_pairing_discoverability(true, false);
+#else
+        esp_err_t err = set_pairing_discoverability(true, true);
+#endif
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Could not enable startup discoverability: %s",
+                     esp_err_to_name(err));
+        }
+        ESP_LOGI(TAG, "READY identity=Nintendo RVL-CNT-01; discoverable without web control");
+#endif
+        esp_bd_addr_t saved_host;
+        if (copy_last_host(saved_host)) schedule_hid_reconnect("HID app ready");
         break;
+    }
     case ESP_HIDD_UNREGISTER_APP_EVT:
         wiimote_sdp_clear_hid_ready();
         ESP_LOGI(TAG, "HID app unregistered result=%d", param->unregister_app.status);
@@ -1022,9 +1842,53 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             ESP_LOGI(TAG, "WIIREMOTE_HID_CONNECTED peer=%s",
                      wiimote_bt_address_string(param->open.bd_addr, peer));
             (void)wiimote_reports_send_current();
+
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+            esp_bd_addr_t operation_host = {0};
+            bool general_discoverable = false;
+            connection_operation_state_t operation =
+                connection_operation_snapshot(operation_host,
+                                              &general_discoverable);
+            if (connection_operation_is_pair(operation)) {
+                if (operation == CONNECTION_OP_PAIR_OPENING_WINDOW) {
+                    connection_operation_set_state(CONNECTION_OP_IDLE);
+                } else if (operation == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID) {
+                    ESP_LOGW(TAG, "HID opened during Pair Bluetooth restart; waiting for the restart to finish");
+                }
+            } else if (operation == CONNECTION_OP_RECONNECT_CONNECTING) {
+                connection_operation_set_state(CONNECTION_OP_IDLE);
+            } else if (operation == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+                ESP_LOGW(TAG, "HID opened during Reconnect Bluetooth restart; waiting for the restart to finish");
+            }
+#endif
         }
         else if (param->open.status != ESP_HIDD_SUCCESS ||
                  param->open.conn_status == ESP_HIDD_CONN_STATE_DISCONNECTED) {
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+            connection_operation_state_t operation =
+                connection_operation_snapshot(NULL, NULL);
+            if (operation == CONNECTION_OP_RECONNECT_CONNECTING ||
+                operation == CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID) {
+                connection_operation_set_state(CONNECTION_OP_RECONNECT_FAILED);
+                (void)connection_operation_arm_watchdog();
+                break;
+            }
+            if (connection_operation_is_pair(operation)) {
+                connection_operation_set_state(CONNECTION_OP_PAIR_FAILED);
+                (void)connection_operation_arm_watchdog();
+                break;
+            }
+            if (operation == CONNECTION_OP_SYNC_REARM_DISCONNECTING) {
+                connection_operation_set_state(CONNECTION_OP_SYNC_REARM_FAILED);
+                (void)connection_operation_arm_watchdog();
+                break;
+            }
+            if (operation == CONNECTION_OP_SYNC_REARM_FAILED) {
+                portENTER_CRITICAL(&s_reconnect_mux);
+                s_reconnect_paused = false;
+                portEXIT_CRITICAL(&s_reconnect_mux);
+            }
+#endif
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
             maybe_arm_upstream_discovery("HID open failed");
 #else
@@ -1036,76 +1900,79 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
     case ESP_HIDD_CLOSE_EVT: {
         ESP_LOGI(TAG, "HID close result=%d state=%d",
                  param->close.status, param->close.conn_status);
-        bool sync_after_disconnect = false;
-        bool sync_after_unplug_disconnect = false;
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-        portENTER_CRITICAL(&s_reconnect_mux);
-        sync_after_disconnect = s_sync_after_disconnect_pending;
-        sync_after_unplug_disconnect = s_sync_after_unplug_disconnect_pending;
-        portEXIT_CRITICAL(&s_reconnect_mux);
+        esp_bd_addr_t operation_host = {0};
+        bool general_discoverable = false;
+        connection_operation_state_t operation =
+            connection_operation_snapshot(operation_host,
+                                          &general_discoverable);
 #endif
         if (param->close.status != ESP_HIDD_SUCCESS) {
-            if (sync_after_disconnect || sync_after_unplug_disconnect) {
-                portENTER_CRITICAL(&s_reconnect_mux);
-                s_reconnect_paused = false;
-                if (sync_after_disconnect) s_sync_after_disconnect_pending = false;
-                if (sync_after_unplug_disconnect) {
-                    s_sync_after_unplug_disconnect_pending = false;
-                    s_sync_after_unplug_pending = false;
-                    s_sync_after_unplug_general = false;
-                }
-                portEXIT_CRITICAL(&s_reconnect_mux);
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+            if (param->close.status == ESP_HIDD_BUSY &&
+                operation != CONNECTION_OP_IDLE) {
+                ESP_LOGW(TAG, "HID close is busy; keeping operation phase=%s",
+                         connection_operation_phase_name(operation));
+                (void)connection_operation_arm_watchdog();
+                break;
             }
+            if (connection_operation_is_pair(operation)) {
+                connection_operation_set_state(CONNECTION_OP_PAIR_FAILED);
+            } else if (connection_operation_is_reconnect(operation)) {
+                connection_operation_set_state(CONNECTION_OP_RECONNECT_FAILED);
+            } else if (operation == CONNECTION_OP_SYNC_REARM_DISCONNECTING) {
+                connection_operation_set_state(CONNECTION_OP_SYNC_REARM_FAILED);
+            }
+            if (operation != CONNECTION_OP_IDLE) {
+                (void)connection_operation_arm_watchdog();
+                break;
+            }
+#endif
             ESP_LOGE(TAG, "HID close failed; preserving current connection state");
             break;
         }
         if (param->close.conn_status != ESP_HIDD_CONN_STATE_DISCONNECTED) {
             ESP_LOGI(TAG, "HID disconnect not complete; waiting for final close callback");
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+            if (operation != CONNECTION_OP_IDLE) {
+                (void)connection_operation_arm_watchdog();
+            }
+#endif
             break;
         }
-#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-        if (sync_after_disconnect || sync_after_unplug_disconnect) {
-            portENTER_CRITICAL(&s_reconnect_mux);
-            if (sync_after_disconnect) s_sync_after_disconnect_pending = false;
-            if (sync_after_unplug_disconnect) {
-                s_sync_after_unplug_disconnect_pending = false;
-            }
-            portEXIT_CRITICAL(&s_reconnect_mux);
-        }
-#endif
         wiimote_state_close();
         wiimote_web_set_hid_connected(false);
         close_sync_pairing_window("HID connection closed");
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-        if (sync_after_disconnect) {
+        switch (operation) {
+        case CONNECTION_OP_PAIR_RESTARTING_BLUEDROID:
+        case CONNECTION_OP_RECONNECT_RESTARTING_BLUEDROID:
+            ESP_LOGI(TAG, "HID closed during Bluetooth stack restart");
+            break;
+        case CONNECTION_OP_SYNC_REARM_DISCONNECTING: {
             esp_err_t err = start_sync_pairing_window(false);
             if (err == ESP_OK) {
+                connection_operation_set_state(CONNECTION_OP_IDLE);
                 ESP_LOGI(TAG, "SYNC window opened after controlled HID disconnect");
-                break;
+            } else {
+                connection_operation_set_state(CONNECTION_OP_SYNC_REARM_FAILED);
+                (void)connection_operation_arm_watchdog();
+                ESP_LOGE(TAG, "Could not open SYNC after HID disconnect: %s",
+                         esp_err_to_name(err));
             }
-            portENTER_CRITICAL(&s_reconnect_mux);
-            s_reconnect_paused = false;
-            portEXIT_CRITICAL(&s_reconnect_mux);
-            ESP_LOGE(TAG, "Could not open SYNC after HID disconnect: %s",
-                     esp_err_to_name(err));
-        }
-        if (sync_after_unplug_disconnect) {
-            esp_err_t err = esp_bt_hid_device_virtual_cable_unplug();
-            if (err == ESP_OK) {
-                ESP_LOGW(TAG, "HOST_SWITCH_LOCAL_VIRTUAL_CABLE_UNPLUG_REQUESTED after HID disconnect");
-                break;
-            }
-
-            portENTER_CRITICAL(&s_reconnect_mux);
-            s_reconnect_paused = false;
-            s_sync_after_unplug_pending = false;
-            s_sync_after_unplug_general = false;
-            portEXIT_CRITICAL(&s_reconnect_mux);
-            ESP_LOGE(TAG, "Could not unlink saved HID host after disconnect: %s",
-                     esp_err_to_name(err));
-            schedule_hid_reconnect("local virtual-cable unplug failed");
             break;
         }
+        case CONNECTION_OP_PAIR_FAILED:
+        case CONNECTION_OP_RECONNECT_FAILED:
+        case CONNECTION_OP_SYNC_REARM_FAILED:
+            (void)resume_connection_operation();
+            break;
+        case CONNECTION_OP_IDLE:
+        case CONNECTION_OP_PAIR_OPENING_WINDOW:
+        default:
+            break;
+        }
+        if (operation != CONNECTION_OP_IDLE) break;
 #endif
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
         maybe_arm_upstream_discovery("HID connection closed");
@@ -1181,15 +2048,30 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
     case ESP_HIDD_VC_UNPLUG_EVT: {
         ESP_LOGI(TAG, "virtual cable unplug result=%d state=%d",
                  param->vc_unplug.status, param->vc_unplug.conn_status);
-        bool sync_after_unplug = false;
-        bool general_discoverable = false;
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
+        connection_operation_state_t operation =
+            connection_operation_snapshot(NULL, NULL);
         portENTER_CRITICAL(&s_reconnect_mux);
-        sync_after_unplug = s_sync_after_unplug_pending;
-        general_discoverable = s_sync_after_unplug_general;
-        s_sync_after_unplug_pending = false;
-        s_sync_after_unplug_general = false;
+        bool pair_unplug_pending =
+            operation == CONNECTION_OP_PAIR_RESTARTING_BLUEDROID &&
+            s_pair_vc_unplug_pending;
+        if (pair_unplug_pending) {
+            s_pair_vc_unplug_status = param->vc_unplug.status;
+            s_pair_vc_unplug_conn_status = param->vc_unplug.conn_status;
+            s_pair_vc_unplug_pending = false;
+        }
         portEXIT_CRITICAL(&s_reconnect_mux);
+        if (pair_unplug_pending) {
+            if (xSemaphoreGive(s_pair_vc_unplug_done) != pdTRUE) {
+                ESP_LOGE(TAG, "Could not signal Pair virtual-cable-unplug completion");
+            }
+            break;
+        }
+        if (operation != CONNECTION_OP_IDLE) {
+            ESP_LOGI(TAG, "Ignoring virtual-cable-unplug callback during operation=%s",
+                     connection_operation_phase_name(operation));
+            break;
+        }
 #endif
         if (param->vc_unplug.status != ESP_HIDD_SUCCESS ||
             param->vc_unplug.conn_status != ESP_HIDD_CONN_STATE_DISCONNECTED) {
@@ -1204,49 +2086,6 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         wiimote_web_set_hid_connected(false);
         stop_hid_reconnect_timer();
         close_sync_pairing_window("virtual cable unplugged");
-#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-        if (sync_after_unplug) {
-            esp_bd_addr_t host;
-            if (!copy_last_host(host)) {
-                clear_last_host();
-                esp_err_t err = start_sync_pairing_window(general_discoverable);
-                if (err == ESP_OK) {
-                    ESP_LOGI(TAG, "SYNC window opened after virtual-cable release with no saved host");
-                    break;
-                }
-                ESP_LOGE(TAG, "Could not open SYNC after virtual-cable release: %s",
-                         esp_err_to_name(err));
-                break;
-            }
-
-            portENTER_CRITICAL(&s_reconnect_mux);
-            s_sync_after_bond_remove_pending = true;
-            s_sync_after_bond_remove_general = general_discoverable;
-            memcpy(s_sync_after_bond_remove_host, host,
-                   sizeof(s_sync_after_bond_remove_host));
-            portEXIT_CRITICAL(&s_reconnect_mux);
-
-            esp_err_t err = esp_bt_gap_remove_bond_device(host);
-            if (err != ESP_OK) {
-                portENTER_CRITICAL(&s_reconnect_mux);
-                s_sync_after_bond_remove_pending = false;
-                s_sync_after_bond_remove_general = false;
-                memset(s_sync_after_bond_remove_host, 0,
-                       sizeof(s_sync_after_bond_remove_host));
-                s_reconnect_paused = false;
-                portEXIT_CRITICAL(&s_reconnect_mux);
-                ESP_LOGE(TAG, "Could not remove saved host bond before Pair: %s",
-                         esp_err_to_name(err));
-                schedule_hid_reconnect("host bond removal request failed");
-                break;
-            }
-
-            char peer[18];
-            ESP_LOGI(TAG, "HOST_SWITCH_BOND_REMOVE_REQUESTED peer=%s",
-                     wiimote_bt_address_string(host, peer));
-            break;
-        }
-#endif
         clear_last_host();
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
         maybe_arm_upstream_discovery("virtual cable unplugged");
@@ -1315,7 +2154,22 @@ void app_main(void)
         .name = "wiimote_sync",
     };
     ESP_ERROR_CHECK(esp_timer_create(&sync_timer_args, &s_sync_pairing_timer));
+    s_pair_bond_remove_done = xSemaphoreCreateBinary();
+    if (!s_pair_bond_remove_done) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    s_pair_vc_unplug_done = xSemaphoreCreateBinary();
+    if (!s_pair_vc_unplug_done) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+#if CONFIG_BT_SDP_COMMON_ENABLED
+    s_pair_sdp_deinit_done = xSemaphoreCreateBinary();
+    if (!s_pair_sdp_deinit_done) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+#endif
+    const esp_timer_create_args_t connection_operation_timer_args = {
+        .callback = connection_operation_timeout,
+        .name = "connection_op",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&connection_operation_timer_args,
+                                     &s_connection_operation_timer));
     wiimote_web_set_sync_callback(request_sync_with_host_switch);
+    wiimote_web_set_reconnect_callback(request_saved_host_reconnect);
     wiimote_web_set_sync_rearm_callback(request_sync_after_disconnect);
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
     wiimote_web_set_virtual_cable_unplug_callback(request_virtual_cable_unplug);

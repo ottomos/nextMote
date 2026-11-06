@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare complete wiimote/espMote SDP records without ignoring value or type differences."""
+"""Compare complete wiimote/nextMote SDP records without ignoring value or type differences."""
 
 import argparse
 import json
@@ -57,31 +57,31 @@ def parse_record(output: str, service_uuid: int) -> dict[int, str]:
 
 
 def record_differences(
-    wiimote: dict[int, str], esp_mote: dict[int, str]
+    wiimote: dict[int, str], next_mote: dict[int, str]
 ) -> dict[int, tuple[str | None, str | None]]:
     return {
-        attribute: (wiimote.get(attribute), esp_mote.get(attribute))
-        for attribute in sorted((wiimote.keys() | esp_mote.keys()) - {0x0000})
-        if wiimote.get(attribute) != esp_mote.get(attribute)
+        attribute: (wiimote.get(attribute), next_mote.get(attribute))
+        for attribute in sorted((wiimote.keys() | next_mote.keys()) - {0x0000})
+        if wiimote.get(attribute) != next_mote.get(attribute)
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wiimote", type=Path)
-    parser.add_argument("esp_mote", type=Path)
+    parser.add_argument("next_mote", type=Path)
     parser.add_argument("--uuid", type=lambda value: int(value, 0), required=True)
     args = parser.parse_args()
     contents = []
-    for name, path in (("wiimote", args.wiimote), ("espMote", args.esp_mote)):
+    for name, path in (("wiimote", args.wiimote), ("nextMote", args.next_mote)):
         output = path.read_text(encoding="utf-8")
         if "Service Search failed" in output:
             print(f"NOTE: {name} capture has a trailing search error; validating its complete record only")
         contents.append(parse_record(output, args.uuid))
     differences = record_differences(contents[0], contents[1])
     if differences:
-        for attribute, (wiimote, esp_mote) in differences.items():
-            print(f"0x{attribute:04x}: wiimote={wiimote}; espMote={esp_mote}")
+        for attribute, (wiimote, next_mote) in differences.items():
+            print(f"0x{attribute:04x}: wiimote={wiimote}; nextMote={next_mote}")
         print(f"FAIL: {len(differences)} differing SDP attributes for 0x{args.uuid:04x}")
         return 1
     print(

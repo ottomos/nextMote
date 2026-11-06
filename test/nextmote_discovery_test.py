@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repeat bounded BR/EDR inquiry checks during ESPmote SYNC windows."""
+"""Repeat bounded BR/EDR inquiry checks during nextMote SYNC windows."""
 
 import argparse
 import json
@@ -8,7 +8,7 @@ import subprocess
 import time
 import urllib.request
 
-ESP_MOTE_ADDRESS = "e4:65:b8:71:6e:12"
+NEXT_MOTE_ADDRESS = "e4:65:b8:71:6e:12"
 EXPECTED_CLASSES = {
     "sync": 0x002504,
     "general": 0x000504,
@@ -55,7 +55,7 @@ def open_pairing_window(base_url: str, endpoint: str, *, allow_giac_only: bool =
     with urllib.request.urlopen(request, timeout=8) as response:
         result = json.load(response)
     if result.get("ok") is not True:
-        raise RuntimeError(f"ESPmote refused the SYNC request: {result!r}")
+        raise RuntimeError(f"nextMote refused the SYNC request: {result!r}")
     window_seconds = result.get("window_seconds")
     if result.get("pairing_profile") == "upstream-general-continuous":
         if not allow_upstream_continuous:
@@ -64,10 +64,10 @@ def open_pairing_window(base_url: str, endpoint: str, *, allow_giac_only: bool =
             raise RuntimeError(f"Unexpected upstream discovery profile response: {result!r}")
         return 0
     if not isinstance(window_seconds, int) or window_seconds != 30:
-        raise RuntimeError(f"Unexpected ESPmote SYNC window length: {window_seconds!r}")
+        raise RuntimeError(f"Unexpected nextMote SYNC window length: {window_seconds!r}")
     expected_discovery = "general" if endpoint == "/api/sync/general" else "limited"
     if result.get("discovery") != expected_discovery:
-        raise RuntimeError(f"Unexpected ESPmote discovery mode: {result!r}")
+        raise RuntimeError(f"Unexpected nextMote discovery mode: {result!r}")
     if result.get("diagnostic_giac_only") is True and not allow_giac_only:
         raise RuntimeError("GIAC-only diagnostic is active; full discovery parity cannot be tested")
     return window_seconds
@@ -77,7 +77,7 @@ def check_web_server(base_url: str) -> None:
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/status", timeout=8) as response:
         status = json.load(response)
     if status.get("wifi") is not True:
-        raise RuntimeError(f"ESPmote Wi-Fi is not ready: {status!r}")
+        raise RuntimeError(f"nextMote Wi-Fi is not ready: {status!r}")
 
 
 def run_inquiry(
@@ -102,7 +102,7 @@ def run_inquiry(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("base_url", help="ESPmote URL, e.g. http://192.168.68.106")
+    parser.add_argument("base_url", help="nextMote URL, e.g. http://192.168.68.106")
     parser.add_argument("--interface", default="hci0", help="local Bluetooth adapter")
     parser.add_argument(
         "--mode",
@@ -140,10 +140,10 @@ def main() -> int:
             esp_found = False
             print(f"  {inquiry_name}:")
             for address, device_class in devices:
-                marker = " ESPmote" if address == ESP_MOTE_ADDRESS else ""
+                marker = " nextMote" if address == NEXT_MOTE_ADDRESS else ""
                 print(f"    {address} class=0x{device_class:06x}{marker}")
                 if (
-                    address == ESP_MOTE_ADDRESS
+                    address == NEXT_MOTE_ADDRESS
                     and device_class == EXPECTED_CLASSES[discovery_name]
                 ):
                     esp_found = True
@@ -162,7 +162,7 @@ def main() -> int:
         or successes.get((mode, inquiry_name), 0) != attempts[(mode, inquiry_name)]
     ]
     if failures:
-        print("FAIL: ESPmote expected CoD was not seen consistently (" + "; ".join(failures) + ")")
+        print("FAIL: nextMote expected CoD was not seen consistently (" + "; ".join(failures) + ")")
         return 1
 
     summary = [

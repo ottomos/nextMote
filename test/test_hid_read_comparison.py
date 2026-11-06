@@ -3,6 +3,7 @@
 
 import unittest
 
+import tools_path
 from compare_hid_read import captured_sequence
 
 

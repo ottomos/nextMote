@@ -204,7 +204,7 @@ def main() -> int:
     args = parser.parse_args()
     colour = not args.no_color and sys.stdout.isatty()
 
-    print(paint("ESPmote live connection test", "bold", colour), flush=True)
+    print(paint("nextMote live connection test", "bold", colour), flush=True)
     print(f"UTC start {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}", flush=True)
     print(paint("Power on the DolphinBar (mode 4) and the ESP32 now, then press SYNC.",
                 "cyan", colour), flush=True)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure inquiry/paging fields omitted by hcitool without disturbing an active espMote."""
+"""Measure inquiry/paging fields omitted by hcitool without disturbing an active nextMote."""
 
 import argparse
 import ctypes
@@ -8,10 +8,15 @@ from dataclasses import dataclass
 import json
 import os
 import re
+import sys
 import time
 import urllib.request
 
-from espmote_discovery_test import open_pairing_window
+TEST_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "test")
+if TEST_DIR not in sys.path:
+    sys.path.insert(0, TEST_DIR)
+
+from nextmote_discovery_test import open_pairing_window
 
 INQUIRY_INFO_SIZE = 14
 MAX_RESPONSES = 20
@@ -96,13 +101,13 @@ def run_inquiry(device_id: int, length: int, limited: bool) -> list[InquiryResul
             library.bt_free(ctypes.cast(info, ctypes.c_void_p))
 
 
-def require_idle_esp_mote(base_url: str) -> None:
+def require_idle_next_mote(base_url: str) -> None:
     with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/status", timeout=8) as response:
         status = json.load(response)
     if status.get("wifi") is not True:
-        raise RuntimeError(f"espMote Wi-Fi is not ready: {status!r}")
+        raise RuntimeError(f"nextMote Wi-Fi is not ready: {status!r}")
     if status.get("connected") is not False:
-        raise RuntimeError("espMote is in use or connection state is unknown; refusing active inquiry/SYNC")
+        raise RuntimeError("nextMote is in use or connection state is unknown; refusing active inquiry/SYNC")
 
 
 def check_manual_budget(cycles: int, length: int) -> None:
@@ -114,11 +119,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target_address")
     parser.add_argument("--interface", default="hci0")
-    parser.add_argument("--label", choices=("wiimote", "espMote"), default="wiimote")
+    parser.add_argument("--label", choices=("wiimote", "nextMote"), default="wiimote")
     parser.add_argument("--iac", choices=("general", "limited"), default="general")
     parser.add_argument("--length", type=int, default=2, help="inquiry length in 1.28-second units (1-12)")
     parser.add_argument("--cycles", type=int, default=1, help="bounded cycles (1-10)")
-    parser.add_argument("--base-url", help="open espMote SYNC automatically, only when disconnected")
+    parser.add_argument("--base-url", help="open nextMote SYNC automatically, only when disconnected")
     args = parser.parse_args()
     if not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", args.target_address):
         parser.error("Target must be a six-byte Bluetooth address")
@@ -127,8 +132,8 @@ def main() -> int:
         parser.error("Interface must be hciN with a valid numeric device ID")
     if not 1 <= args.length <= 12 or not 1 <= args.cycles <= 10:
         parser.error("Length/cycles are outside the bounded diagnostic range")
-    if args.base_url and args.label != "espMote":
-        parser.error("--base-url is only for espMote, not the wiimote reference")
+    if args.base_url and args.label != "nextMote":
+        parser.error("--base-url is only for nextMote, not the wiimote reference")
     if not args.base_url:
         try:
             check_manual_budget(args.cycles, args.length)
@@ -139,7 +144,7 @@ def main() -> int:
     successes = 0
     for cycle in range(1, args.cycles + 1):
         if args.base_url:
-            require_idle_esp_mote(args.base_url)
+            require_idle_next_mote(args.base_url)
             open_pairing_window(args.base_url, "/api/sync", allow_giac_only=True,
                                 allow_upstream_continuous=True)
         started = time.monotonic()

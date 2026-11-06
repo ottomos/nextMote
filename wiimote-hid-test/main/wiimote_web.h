@@ -10,6 +10,7 @@
 
 typedef esp_err_t (*wiimote_web_button_callback_t)(uint16_t state);
 typedef esp_err_t (*wiimote_web_sync_callback_t)(bool general_discoverable);
+typedef esp_err_t (*wiimote_web_reconnect_callback_t)(void);
 typedef esp_err_t (*wiimote_web_virtual_cable_unplug_callback_t)(void);
 typedef esp_err_t (*wiimote_web_sync_rearm_callback_t)(void);
 
@@ -17,7 +18,10 @@ void wiimote_web_start(void);
 void wiimote_web_set_hid_connected(bool connected);
 void wiimote_web_set_last_host(const uint8_t address[6]);
 void wiimote_web_set_reconnect_pending(bool pending);
+void wiimote_web_set_manual_reconnect_pending(bool pending);
+void wiimote_web_set_pairing_phase(const char *phase);
 void wiimote_web_set_sync_callback(wiimote_web_sync_callback_t callback);
+void wiimote_web_set_reconnect_callback(wiimote_web_reconnect_callback_t callback);
 void wiimote_web_set_virtual_cable_unplug_callback(
     wiimote_web_virtual_cable_unplug_callback_t callback);
 void wiimote_web_set_sync_rearm_callback(wiimote_web_sync_rearm_callback_t callback);

@@ -3,6 +3,7 @@
 
 import unittest
 
+import tools_path
 import compare_sdp
 
 

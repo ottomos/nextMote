@@ -3,6 +3,7 @@
 
 import unittest
 
+import tools_path
 import read_wiimote_reference as reference
 
 

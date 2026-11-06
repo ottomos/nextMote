@@ -8,6 +8,7 @@ import json
 import unittest
 from unittest import mock
 
+import tools_path
 import inspect_inquiry
 
 
@@ -35,25 +36,25 @@ class InquiryInspectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inspect_inquiry.check_manual_budget(2, 12)
 
-    def test_active_or_unknown_esp_mote_connection_is_not_disturbed(self) -> None:
+    def test_active_or_unknown_next_mote_connection_is_not_disturbed(self) -> None:
         for status in ({"wifi": True, "connected": True}, {"wifi": True}):
             response = io.BytesIO(json.dumps(status).encode())
             with self.subTest(status=status):
                 with mock.patch.object(inspect_inquiry.urllib.request, "urlopen", return_value=response):
                     with self.assertRaises(RuntimeError):
-                        inspect_inquiry.require_idle_esp_mote("http://127.0.0.1")
+                        inspect_inquiry.require_idle_next_mote("http://127.0.0.1")
 
-    def test_idle_esp_mote_is_accepted(self) -> None:
+    def test_idle_next_mote_is_accepted(self) -> None:
         response = io.BytesIO(b'{"wifi":true,"connected":false}')
         with mock.patch.object(inspect_inquiry.urllib.request, "urlopen", return_value=response):
-            inspect_inquiry.require_idle_esp_mote("http://127.0.0.1")
+            inspect_inquiry.require_idle_next_mote("http://127.0.0.1")
 
     def test_guard_runs_before_radio_inquiry_or_sync(self) -> None:
         response = io.BytesIO(b'{"wifi":true,"connected":true}')
         with (
             mock.patch("sys.argv", [
                 "inspect_inquiry.py", "e4:65:b8:71:6e:12",
-                "--label", "espMote", "--base-url", "http://127.0.0.1",
+                "--label", "nextMote", "--base-url", "http://127.0.0.1",
             ]),
             mock.patch.object(inspect_inquiry.urllib.request, "urlopen", return_value=response),
             mock.patch.object(inspect_inquiry, "run_inquiry") as inquiry,

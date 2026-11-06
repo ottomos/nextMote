@@ -123,7 +123,7 @@ tHID_STATUS __wrap_HID_DevAddRecord(uint32_t handle, char *name,
     if (err != ESP_OK) return HID_ERR_NOT_REGISTERED;
 
     set_hid_ready(true);
-    ESP_LOGI(TAG, "espMote HID SDP matches captured wiimote policy: handle=0x%08lx",
+    ESP_LOGI(TAG, "nextMote HID SDP matches captured wiimote policy: handle=0x%08lx",
              (unsigned long)handle);
     return HID_SUCCESS;
 }
@@ -154,7 +154,7 @@ esp_err_t wiimote_sdp_apply_device_id(uint32_t handle)
         ESP_LOGE(TAG, "Could not set wiimote Device ID profile descriptor");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "espMote Device ID SDP matches captured wiimote policy: handle=0x%08lx",
+    ESP_LOGI(TAG, "nextMote Device ID SDP matches captured wiimote policy: handle=0x%08lx",
              (unsigned long)handle);
     return ESP_OK;
 }

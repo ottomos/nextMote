@@ -42,6 +42,7 @@ static portMUX_TYPE s_link_status_mux = portMUX_INITIALIZER_UNLOCKED;
 static ir_camera_state_t s_camera_state;
 static wiimote_web_button_callback_t s_button_callback;
 static wiimote_web_sync_callback_t s_sync_callback;
+static wiimote_web_reconnect_callback_t s_reconnect_callback;
 static wiimote_web_virtual_cable_unplug_callback_t s_virtual_cable_unplug_callback;
 static wiimote_web_sync_rearm_callback_t s_sync_rearm_callback;
 static esp_netif_t *s_station;
@@ -51,6 +52,8 @@ static bool s_hid_connected;
 static bool s_sync_window_active;
 static char s_last_host_address[18];
 static bool s_reconnect_pending;
+static bool s_manual_reconnect_pending;
+static char s_pairing_phase[24] = "idle";
 
 static const struct {
     const char *name;
@@ -65,7 +68,7 @@ static const struct {
 static const char INDEX_HTML[] =
     "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1,user-scalable=no'>"
-    "<title>ESPmote Controller</title><style>"
+    "<title>nextMote Controller</title><style>"
     "*{box-sizing:border-box}body{margin:0;background:#101522;color:#edf2ff;"
     "font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh}"
     ".wrap{width:min(760px,100%);padding:20px}h1{text-align:center;margin:4px}"
@@ -90,8 +93,12 @@ static const char INDEX_HTML[] =
     "display:grid;grid-template-columns:1fr 1fr;gap:10px}.combo{height:48px;background:#506a88}"
     ".pairing-panel{margin:18px auto;padding:18px;background:#161e2d;border:1px solid #35415a;"
     "border-radius:22px;text-align:center}.pairing-panel h2{margin:0}.pairing-panel p{"
-    "color:#aab7cf;line-height:1.5}.sync-button{width:min(360px,100%);height:56px;"
-    "background:#c74455}.sync-button:disabled{opacity:.55;cursor:not-allowed}"
+    "color:#aab7cf;line-height:1.5}.pair-actions{display:flex;gap:12px;width:min(460px,100%);"
+    "margin:auto}.pair-action{flex:1;min-width:0;min-height:64px;padding:8px 10px;"
+    "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;"
+    "line-height:1.15}.pair-action small{font-size:12px;font-weight:500;opacity:.82}"
+    ".sync-button{background:#c74455}.reconnect-button{background:#426ec6}"
+    ".pair-action:disabled{opacity:.55;cursor:not-allowed}"
     "@media(max-width:460px){.remote{padding:18px;gap:8px;grid-template-rows:repeat(7,56px)}"
     ".ab button{width:62px;"
     "height:62px}.ab button:first-child{width:76px;height:76px}}"
@@ -117,10 +124,15 @@ static const char INDEX_HTML[] =
     "#imu-cube{width:72px;height:72px;border:2px solid #172033;"
     "background:linear-gradient(145deg,#f29900,#f8c96b);transform-style:preserve-3d;"
     "transition:transform 90ms linear}"
-    "</style></head><body><main class='wrap'><h1>ESPmote</h1>"
-    "<div id='status'>Connecting to ESP32…</div><div id='button-status' aria-live='polite'></div>"
-    "<section class='pairing-panel' aria-label='Bluetooth pairing'>"
-    "<button id='sync-button' type='button' class='sync-button'>Pair</button>"
+    "</style></head><body><main class='wrap'><h1>nextMote</h1>"
+    "<div id='status'>Loading controller status…</div><div id='button-status' aria-live='polite'></div>"
+    "<section class='pairing-panel' aria-label='Bluetooth host actions'>"
+    "<div class='pair-actions'>"
+    "<button id='reconnect-button' type='button' class='pair-action reconnect-button'>"
+    "<span class='action-label'>Reconnect</span><small>last host</small></button>"
+    "<button id='sync-button' type='button' class='pair-action sync-button'>"
+    "<span class='action-label'>Pair</span><small>next host</small></button>"
+    "</div>"
     "</section>"
     "<section class='remote' aria-label='Wii Remote'>"
     "<div class='dpad'><button class='up' data-button='Up'>▲</button>"
@@ -151,9 +163,13 @@ static const char INDEX_HTML[] =
     "</div></div></section></main><script>"
     "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
     "const syncButton=document.querySelector('#sync-button');"
-    "let syncRequestPending=false,pairingPending=false,pairingSawDisconnect=false;"
+    "const syncButtonLabel=syncButton.querySelector('.action-label');"
+    "const reconnectButton=document.querySelector('#reconnect-button');"
+    "const reconnectButtonLabel=reconnectButton.querySelector('.action-label');"
+    "let syncRequestPending=false,pairingPending=false;"
+    "let reconnectRequestPending=false,manualReconnectActive=false;"
     "let pairingWindowStarted=false,pairingWindowSeconds=0,pairingExpires=0,pairingInitialHost='';"
-    "let syncCountdownTimer=null,pairingWaitTimer=null;"
+    "let syncCountdownTimer=null,statusRequestController=null;"
     "let held=new Set(),queue=Promise.resolve();"
     "const cameraStatusEl=document.querySelector('#camera-status');"
     "const cameraTracker=document.querySelector('#camera-tracker');const cameraDots=[];"
@@ -174,55 +190,88 @@ static const char INDEX_HTML[] =
     "for(const ev of ['pointerup','pointercancel','lostpointercapture'])b.addEventListener(ev,()=>release(b));"
     "b.addEventListener('contextmenu',e=>e.preventDefault())});"
     "window.addEventListener('blur',()=>{for(const b of document.querySelectorAll('.pressed'))release(b)});"
-    "document.addEventListener('visibilitychange',()=>{if(document.hidden){for(const b of document.querySelectorAll('.pressed'))release(b)}});"
+    "document.addEventListener('visibilitychange',()=>{if(document.hidden){"
+    "for(const b of document.querySelectorAll('.pressed'))release(b)}else refreshStatus(true)});"
+    "window.addEventListener('focus',()=>{if(!document.hidden)refreshStatus(true)});"
     "function finishPairing(message){if(syncCountdownTimer){clearInterval(syncCountdownTimer);syncCountdownTimer=null}"
-    "if(pairingWaitTimer){clearInterval(pairingWaitTimer);pairingWaitTimer=null}"
-    "pairingPending=false;pairingSawDisconnect=false;pairingWindowStarted=false;pairingWindowSeconds=0;"
-    "pairingInitialHost='';syncButton.textContent='Pair';syncButton.disabled=syncRequestPending;"
+    "pairingPending=false;pairingWindowStarted=false;pairingWindowSeconds=0;"
+    "pairingInitialHost='';syncButtonLabel.textContent='Pair';"
+    "syncButton.disabled=syncRequestPending||reconnectRequestPending||manualReconnectActive;"
     "buttonStatusEl.textContent=message||''}"
     "function startPairingCountdown(){pairingWindowStarted=true;"
-    "if(pairingWaitTimer){clearInterval(pairingWaitTimer);pairingWaitTimer=null}"
     "pairingExpires=Date.now()+pairingWindowSeconds*1000;buttonStatusEl.textContent='Pairing window open';"
     "const refreshSync=()=>{const left=Math.max(0,Math.ceil((pairingExpires-Date.now())/1000));"
-    "syncButton.textContent=left?'Pair · '+left+'s':'Pair';if(!left)finishPairing('')};"
+    "syncButtonLabel.textContent=left?'Pair · '+left+'s':'Pair';if(!left)finishPairing('')};"
     "if(syncCountdownTimer)clearInterval(syncCountdownTimer);refreshSync();"
     "syncCountdownTimer=setInterval(refreshSync,250)}"
-    "async function requestSync(){if(syncRequestPending||pairingPending)return;"
-    "syncRequestPending=true;syncButton.disabled=true;buttonStatusEl.textContent='';"
+    "function pairingPhaseLabel(phase){switch(phase){case'restarting-bluetooth':return'Restarting Bluetooth';"
+    "case'removing-bond':return'Forgetting current host';"
+    "case'opening-window':return'Opening pairing window';case'failed':return'Host release needs retry';"
+    "default:return'Preparing pairing window'}}"
+    "function pairingButtonPhase(phase){switch(phase){case'restarting-bluetooth':return'Restarting';"
+    "case'removing-bond':return'Forgetting';"
+    "case'opening-window':return'Opening';case'failed':return'Retry';default:return'Opening'}}"
+    "async function requestSync(){if(syncRequestPending||pairingPending||reconnectRequestPending||manualReconnectActive)return;"
+    "syncRequestPending=true;syncButton.disabled=true;reconnectButton.disabled=true;buttonStatusEl.textContent='';"
     "try{const r=await fetch('/api/sync',{method:'POST'});"
     "if(!r.ok)throw Error(await r.text());const d=await r.json();"
     "if(d.pairing_profile==='upstream-general-continuous'){"
-    "syncButton.textContent='Pair';return;}"
-    "pairingPending=true;pairingSawDisconnect=statusEl.dataset.connected!=='1';"
+    "syncButtonLabel.textContent='Pair';return;}"
+    "pairingPending=true;"
     "pairingInitialHost=statusEl.dataset.host||'';pairingWindowStarted=false;"
-    "pairingWindowSeconds=d.window_seconds;buttonStatusEl.textContent='Releasing current host...';"
-    "syncButton.textContent='Pair · Releasing';const openDeadline=Date.now()+10000;"
-    "if(pairingWaitTimer)clearInterval(pairingWaitTimer);"
-    "pairingWaitTimer=setInterval(()=>{if(pairingWindowStarted){clearInterval(pairingWaitTimer);"
-    "pairingWaitTimer=null;return}if(Date.now()>=openDeadline)"
-    "finishPairing('Pair failed: host release did not complete')},250);refreshStatus()}"
-    "catch(e){finishPairing('Pair failed: '+e.message);syncButton.textContent='Pair'}"
-    "finally{syncRequestPending=false;syncButton.disabled=pairingPending}}"
+    "pairingWindowSeconds=d.window_seconds;const hostReleasePending=!!pairingInitialHost;"
+    "buttonStatusEl.textContent=hostReleasePending?'Releasing current host...':'Opening pairing window...';"
+    "syncButtonLabel.textContent=hostReleasePending?'Pair · Releasing':'Pair · Opening';"
+    "refreshStatus(true)}"
+    "catch(e){finishPairing('Pair failed: '+e.message);syncButtonLabel.textContent='Pair'}"
+    "finally{syncRequestPending=false;syncButton.disabled=pairingPending||reconnectRequestPending||manualReconnectActive;"
+    "reconnectButton.disabled=reconnectRequestPending||manualReconnectActive||!statusEl.dataset.host}}"
     "syncButton.addEventListener('click',requestSync);"
+    "async function requestReconnect(){if(reconnectRequestPending||manualReconnectActive||syncRequestPending||pairingPending)return;"
+    "if(!statusEl.dataset.host){buttonStatusEl.textContent='No saved host to reconnect';return}"
+    "reconnectRequestPending=true;reconnectButton.disabled=true;syncButton.disabled=true;"
+    "reconnectButtonLabel.textContent='Reconnecting…';buttonStatusEl.textContent='Refreshing saved host connection...';"
+    "try{const r=await fetch('/api/reconnect',{method:'POST'});"
+    "if(!r.ok)throw Error(await r.text());manualReconnectActive=true;await refreshStatus(true);"
+    "if(!statusEl.dataset.connected)buttonStatusEl.textContent='Reconnecting to last host'}"
+    "catch(e){buttonStatusEl.textContent='Reconnect failed: '+e.message}"
+    "finally{reconnectRequestPending=false;reconnectButton.disabled=manualReconnectActive||!statusEl.dataset.host;"
+    "syncButton.disabled=pairingPending||manualReconnectActive||syncRequestPending;"
+    "if(!manualReconnectActive)reconnectButtonLabel.textContent='Reconnect'}}"
+    "reconnectButton.addEventListener('click',requestReconnect);"
     "function updateStatus(s){const host=s.last_host?' '+s.last_host:'';"
-    "const link=s.connected?'HID connected'+(s.last_host?' · '+s.last_host:''):"
+    "const link=s.connected?'Bluetooth HID link active'+(s.last_host?' · '+s.last_host:''):"
     "s.sync_window?'Pairing window open':"
     "s.reconnecting?'Trying saved host'+host:"
     "s.last_host?'Disconnected · saved host'+host:'Bluetooth ready for Pair';"
     "statusEl.textContent=s.wifi?'Wi-Fi connected · '+s.ip+' · '+link:'Wi-Fi not connected yet';"
     "statusEl.dataset.connected=s.connected?'1':'0';statusEl.dataset.host=s.last_host||'';"
-    "syncButton.disabled=syncRequestPending||pairingPending;"
-    "if(pairingPending&&!s.connected)pairingSawDisconnect=true;"
-    "if(pairingPending&&s.sync_window&&!pairingWindowStarted)startPairingCountdown();"
-    "if(pairingPending&&s.connected&&pairingInitialHost&&s.last_host&&s.last_host!==pairingInitialHost)"
-    "finishPairing('Connected to new host');"
-    "else if(pairingPending&&pairingSawDisconnect&&s.connected)"
+    "statusEl.dataset.pairingPhase=s.pairing_phase||'idle';"
+    "manualReconnectActive=!!s.manual_reconnect;"
+    "reconnectButtonLabel.textContent=manualReconnectActive||reconnectRequestPending?'Reconnecting…':'Reconnect';"
+    "reconnectButton.disabled=!s.last_host||manualReconnectActive||reconnectRequestPending||"
+    "syncRequestPending||pairingPending||s.sync_window||statusEl.dataset.pairingPhase!=='idle';"
+    "syncButton.disabled=syncRequestPending||pairingPending||reconnectRequestPending||manualReconnectActive;"
+    "if(pairingPending&&s.sync_window){if(!pairingWindowStarted)startPairingCountdown()}"
+    "else if(pairingPending){const phase=pairingPhaseLabel(statusEl.dataset.pairingPhase);"
+    "buttonStatusEl.textContent=phase;syncButtonLabel.textContent='Pair · '+"
+    "pairingButtonPhase(statusEl.dataset.pairingPhase)}"
+    "if(pairingPending&&s.pairing_phase==='failed')"
+    "finishPairing('Pair failed to release the host; Pair can be retried');"
+    "else if(pairingPending&&s.connected&&s.pairing_phase==='idle'&&!s.sync_window)"
     "finishPairing(pairingInitialHost&&s.last_host===pairingInitialHost?"
-    "'Previous host reconnected':'Connected');"
+    "'Previous host reconnected':'Connected to host');"
     "if(!s.connected)for(const b of document.querySelectorAll('.pressed'))release(b)}"
-    "async function refreshStatus(){try{const r=await fetch('/api/status',{cache:'no-store'});"
+    "async function refreshStatus(force=false){if(document.hidden)return;"
+    "if(statusRequestController&&!force)return;"
+    "if(statusRequestController)statusRequestController.abort();"
+    "const controller=new AbortController();statusRequestController=controller;"
+    "const timeout=setTimeout(()=>controller.abort(),3000);"
+    "try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});"
     "if(!r.ok)throw Error('HTTP '+r.status);updateStatus(await r.json())}"
-    "catch(e){statusEl.textContent='ESP32 status unavailable';statusEl.dataset.connected='0'}}"
+    "catch(e){if(statusRequestController===controller){"
+    "statusEl.textContent='Controller status unavailable · check Wi-Fi';statusEl.dataset.connected='0'}}"
+    "finally{clearTimeout(timeout);if(statusRequestController===controller)statusRequestController=null}}"
     "refreshStatus();setInterval(refreshStatus,1000);"
     "async function updateCamera(){try{const r=await fetch('/api/camera',{cache:'no-store'});"
     "if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();"
@@ -289,25 +338,30 @@ static esp_err_t status_handler(httpd_req_t *req)
 {
     char ip[16] = "0.0.0.0";
     char last_host[sizeof(s_last_host_address)];
+    char pairing_phase[sizeof(s_pairing_phase)];
     bool reconnect_pending;
+    bool manual_reconnect_pending;
     portENTER_CRITICAL(&s_link_status_mux);
     memcpy(last_host, s_last_host_address, sizeof(last_host));
     reconnect_pending = s_reconnect_pending;
+    manual_reconnect_pending = s_manual_reconnect_pending;
+    memcpy(pairing_phase, s_pairing_phase, sizeof(pairing_phase));
     portEXIT_CRITICAL(&s_link_status_mux);
 
     esp_netif_ip_info_t info = {0};
     if (s_station && esp_netif_get_ip_info(s_station, &info) == ESP_OK) {
         snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
     }
-    char response[256];
+    char response[352];
     bool hid_connected = hid_connected_snapshot();
     bool sync_window_active = sync_window_snapshot();
     int length = snprintf(response, sizeof(response),
-             "{\"wifi\":%s,\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s}",
+             "{\"wifi\":%s,\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s,\"manual_reconnect\":%s,\"pairing_phase\":\"%s\"}",
              (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) ? "true" : "false",
              hid_connected ? "true" : "false",
              sync_window_active ? "true" : "false", ip, PAIRING_PROFILE, last_host,
-             reconnect_pending ? "true" : "false");
+             reconnect_pending ? "true" : "false",
+             manual_reconnect_pending ? "true" : "false", pairing_phase);
     if (length < 0 || (size_t)length >= sizeof(response)) {
         ESP_LOGE(TAG, "Status response formatting failed");
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
@@ -457,7 +511,7 @@ static esp_err_t sync_handler(httpd_req_t *req, bool general_discoverable)
     if (err != ESP_OK) {
         if (err == ESP_ERR_INVALID_STATE) {
             httpd_resp_set_status(req, "409 Conflict");
-            return httpd_resp_sendstr(req, "Bluetooth is connected or not ready for pairing");
+            return httpd_resp_sendstr(req, "Pair could not start: Bluetooth is not ready or a host release is still pending");
         }
         ESP_LOGE(TAG, "Failed to open Bluetooth SYNC window: %s", esp_err_to_name(err));
         httpd_resp_set_status(req, "500 Internal Server Error");
@@ -636,6 +690,39 @@ static esp_err_t sync_rearm_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"queued\":true,\"action\":\"disconnect_then_sync\"}");
 }
 
+static esp_err_t reconnect_handler(httpd_req_t *req)
+{
+    if (req->content_len != 0) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                   "Reconnect request must not have a body");
+    }
+    if (!s_reconnect_callback) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Saved-host reconnect callback is unavailable");
+    }
+
+    esp_err_t err = s_reconnect_callback();
+    if (err == ESP_ERR_NOT_FOUND) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "No saved bonded host is available to reconnect");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Reconnect is unavailable while Pair or another connection transition is active");
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Saved-host reconnect request failed: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, esp_err_to_name(err));
+    }
+
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req,
+                              "{\"ok\":true,\"queued\":true,\"action\":\"reconnect_saved_host\"}");
+}
+
 static const httpd_uri_t s_index_uri = {
     .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL,
 };
@@ -676,11 +763,15 @@ static const httpd_uri_t s_sync_rearm_uri = {
     .uri = "/api/bt/rearm-sync", .method = HTTP_POST,
     .handler = sync_rearm_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_reconnect_uri = {
+    .uri = "/api/reconnect", .method = HTTP_POST,
+    .handler = reconnect_handler, .user_ctx = NULL,
+};
 
 static void start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 13;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -701,6 +792,7 @@ static void start_http_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_virtual_cable_unplug_uri));
 #endif
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_rearm_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_reconnect_uri));
 
     esp_netif_ip_info_t info = {0};
     ESP_ERROR_CHECK(esp_netif_get_ip_info(s_station, &info));
@@ -827,9 +919,36 @@ void wiimote_web_set_reconnect_pending(bool pending)
     portEXIT_CRITICAL(&s_link_status_mux);
 }
 
+void wiimote_web_set_manual_reconnect_pending(bool pending)
+{
+    portENTER_CRITICAL(&s_link_status_mux);
+    s_manual_reconnect_pending = pending;
+    portEXIT_CRITICAL(&s_link_status_mux);
+}
+
+void wiimote_web_set_pairing_phase(const char *phase)
+{
+    if (phase == NULL) {
+        ESP_LOGE(TAG, "Cannot set Pair phase from a null value");
+        return;
+    }
+
+    char copy[sizeof(s_pairing_phase)];
+    snprintf(copy, sizeof(copy), "%s", phase);
+    portENTER_CRITICAL(&s_link_status_mux);
+    memcpy(s_pairing_phase, copy, sizeof(s_pairing_phase));
+    portEXIT_CRITICAL(&s_link_status_mux);
+}
+
 void wiimote_web_set_sync_callback(wiimote_web_sync_callback_t callback)
 {
     s_sync_callback = callback;
+}
+
+void wiimote_web_set_reconnect_callback(
+    wiimote_web_reconnect_callback_t callback)
+{
+    s_reconnect_callback = callback;
 }
 
 void wiimote_web_set_virtual_cable_unplug_callback(

@@ -7,7 +7,8 @@ import json
 import unittest
 from unittest import mock
 
-import espmote_discovery_test as discovery
+import tools_path
+import nextmote_discovery_test as discovery
 
 
 class DiscoveryToolTests(unittest.TestCase):
@@ -19,7 +20,7 @@ class DiscoveryToolTests(unittest.TestCase):
         )
         self.assertEqual(
             discovery.parse_inquiry_results(output),
-            [(discovery.ESP_MOTE_ADDRESS, 0x002504), ("8c:56:c5:49:6e:03", 0x002504)],
+            [(discovery.NEXT_MOTE_ADDRESS, 0x002504), ("8c:56:c5:49:6e:03", 0x002504)],
         )
 
     def test_pairing_response_requires_the_requested_mode_and_thirty_seconds(self) -> None:
@@ -51,7 +52,7 @@ class DiscoveryToolTests(unittest.TestCase):
     def run_main(self, arguments: list[str], responses: list[list[tuple[str, int]]]) -> tuple[int, str]:
         output = io.StringIO()
         with (
-            mock.patch("sys.argv", ["espmote_discovery_test.py", "http://127.0.0.1", *arguments]),
+            mock.patch("sys.argv", ["nextmote_discovery_test.py", "http://127.0.0.1", *arguments]),
             mock.patch.object(discovery, "check_web_server"),
             mock.patch.object(discovery, "open_pairing_window", return_value=30),
             mock.patch.object(discovery, "run_inquiry", side_effect=responses),
@@ -62,28 +63,28 @@ class DiscoveryToolTests(unittest.TestCase):
         return result, output.getvalue()
 
     def test_standard_mode_requires_five_results_for_each_access_code(self) -> None:
-        found = [(discovery.ESP_MOTE_ADDRESS, 0x002504)]
+        found = [(discovery.NEXT_MOTE_ADDRESS, 0x002504)]
         result, output = self.run_main(["--cycles", "5"], [found] * 10)
         self.assertEqual(result, 0)
         self.assertIn("sync GIAC: 5/5 CoD=0x002504", output)
         self.assertIn("sync LIAC: 5/5 CoD=0x002504", output)
 
     def test_liac_failure_cannot_hide_behind_giac_success(self) -> None:
-        found = [(discovery.ESP_MOTE_ADDRESS, 0x002504)]
+        found = [(discovery.NEXT_MOTE_ADDRESS, 0x002504)]
         result, output = self.run_main(["--cycles", "5"], [found, []] * 5)
         self.assertEqual(result, 1)
         self.assertIn("sync LIAC: 0/5", output)
         self.assertNotIn("PASS:", output)
 
     def test_compare_requires_both_diagnostic_modes(self) -> None:
-        general = [(discovery.ESP_MOTE_ADDRESS, 0x000504)]
+        general = [(discovery.NEXT_MOTE_ADDRESS, 0x000504)]
         result, output = self.run_main(["--mode", "compare", "--cycles", "2"], [general, [], []])
         self.assertEqual(result, 1)
         self.assertIn("limited GIAC: 0/1", output)
         self.assertIn("limited LIAC: 0/1", output)
 
     def test_wrong_cod_is_a_failure_even_when_the_address_is_seen(self) -> None:
-        wrong_class = [(discovery.ESP_MOTE_ADDRESS, 0x000504)]
+        wrong_class = [(discovery.NEXT_MOTE_ADDRESS, 0x000504)]
         result, output = self.run_main(["--cycles", "1"], [wrong_class, wrong_class])
         self.assertEqual(result, 1)
         self.assertIn("sync GIAC: 0/1", output)

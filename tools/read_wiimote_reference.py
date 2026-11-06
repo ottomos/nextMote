@@ -50,7 +50,7 @@ def main() -> int:
     parser.add_argument("bluetooth_address")
     parser.add_argument("--address", type=lambda value: int(value, 0), default=0x1770)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--label", choices=("wiimote", "espMote"), default="wiimote")
+    parser.add_argument("--label", choices=("wiimote", "nextMote"), default="wiimote")
     args = parser.parse_args()
     if not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", args.bluetooth_address):
         parser.error("Bluetooth address must contain six colon-separated hex bytes")
