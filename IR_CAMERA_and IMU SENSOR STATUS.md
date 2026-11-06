@@ -2,7 +2,7 @@
 
 Updated 6 November 2026 for `nxt12-imu-integration`; earlier camera observations below retain their original scope.
 
-**Latest game result:** the user reports basic motion now seems to work in Mario Kart Wii through Dolphin + DolphinBar mode 4 with the default MotionPlus-off image. This validates basic standard Wii Remote accelerometer motion in that setup, not full gameplay, real Wii/vWii motion, simultaneous camera/IMU hardware operation, or MotionPlus gameplay.
+**Latest game result:** the user reports basic motion now seems to work in Mario Kart Wii through Dolphin + DolphinBar mode 4 with the default MotionPlus-off image. This validates basic standard Wii Remote accelerometer motion in that setup, not full gameplay, real Wii/vWii motion, or real Wii/vWii motion. Camera+IMU together (Mario Kart finger cursor) and MotionPlus (Wii Sports Resort Swordplay, almost perfect game) were later user-confirmed in Dolphin.
 
 The canonical implementation and test log is the [root plan](../plan.md); this file records camera/IMU-specific hardware observations and wiring.
 
@@ -13,7 +13,7 @@ The canonical implementation and test log is the [root plan](../plan.md); this f
 - The shared ESP32-WROOM I2C bus uses GPIO21 SDA / GPIO22 SCL at 400 kHz. Camera polling runs every 50 ms when the Wi-Fi controller is enabled; the BNO08x service runs every 5 ms, draining up to eight pending packets per bus hold so the camera can share the bus.
 - The virtual-button page includes a live point plot and coordinate table. `GET /api/camera` returns `detected`, `available`, and four `{x,y}` values; camera/IMU web polling shares one bounded in-flight cycle with timeouts and hidden-page suppression.
 - The page also shows BNO08x roll, pitch, and yaw from `GET /api/imu`. The IMU is probed at `0x4B` and `0x4A`; the service requests rotation vector at 50 Hz and gravity-inclusive acceleration at 100 Hz, with stall recovery. Standard Wii Remote HID reports carry live acceleration.
-- Optional MotionPlus uses calibrated gyro data at 100 Hz with `-DNEXTMOTE_ENABLE_MOTION_PLUS=1`. It is off by default and bench stress-tested, not game-validated.
+- Optional MotionPlus uses calibrated gyro data at 100 Hz with `-DNEXTMOTE_ENABLE_MOTION_PLUS=1`. It is off by default; Wii Sports Resort Swordplay was user-reported as an almost perfect game in Dolphin (DolphinBar, M+ build, camera + IMU).
 - Camera points are passed into the IR portion of HID report `0x33` on the pointer branch. Both axes are mirrored in HID only; the camera plot continues to show raw sensor coordinates.
 - Camera startup is optional. If no device responds at `0x58`, initialization logs a warning, publishes `detected:false`, and continues. The shared bus remains initialized so an IMU connected without a camera can still be probed.
 - Read failures are logged and do not stop the Bluetooth HID or web controller.
@@ -100,4 +100,4 @@ idf.py build
 
 Open the nextMote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons; the BNO08x orientation panel shows roll/pitch/yaw and a rotating cube. Inspect `/api/camera` for IR points and `/api/imu` for IMU state and Euler angles. For an IMU-only check, disconnect the camera and follow the BNO08x wiring in [ASSEMBLY_GUIDE.html](./ASSEMBLY_GUIDE.html).
 
-Camera acquisition at 3.3 V, BNO08x web orientation with INT=GPIO27, and basic accelerometer motion in Mario Kart Wii through Dolphin + DolphinBar are verified by the recorded bench/user observations. Combined camera/IMU hardware operation, real Wii/vWii motion, and optional MotionPlus gameplay still require testing.
+Camera acquisition at 3.3 V, BNO08x web orientation with INT=GPIO27, and basic accelerometer motion in Mario Kart Wii through Dolphin + DolphinBar are verified by the recorded bench/user observations. Combined camera/IMU operation (Mario Kart Wii) and optional MotionPlus (Wii Sports Resort Swordplay) are user-confirmed in Dolphin; real Wii/vWii motion still requires testing.
