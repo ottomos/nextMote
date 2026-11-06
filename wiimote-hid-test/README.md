@@ -36,7 +36,17 @@ On the final firmware, Pair opened a 30-second Limited window with `connected=fa
 
 Validation on ESP-IDF 6.0.1: `python3 -m unittest discover -s test -v` passes all 36 tests; `idf.py build` produces `nextMote.bin` (0x167d20 bytes, 4% app-partition space remaining). The final 460800-baud ESP-IDF flash wrote bootloader (`0x1000`), partition table (`0x8000`), and app (`0x10000`), with each image hash-verified and no NVS erase. An earlier 115200-baud attempt stopped during the app write; the final image was flashed successfully with the RAM stub.
 
-The user plans separate Wii U Menu and vWii tests next. Use **Pair** and the console's SYNC procedure for a new host; Pair intentionally clears the saved laptop bond. Record pairing, local HID-open, actual button input, and any need for an ESP power-cycle separately. PC HID-open does not establish Wii U/vWii acceptance.
+The user has since completed a separate Wii U/vWii host sequence, recorded below. Pair intentionally clears the previous host bond when switching to a new console.
+
+### User-reported console host sequence - 6 November 2026
+
+1. Pressed **Pair** and DolphinBar SYNC; it connected in about 1-2 seconds.
+2. Opened Wii U mode, pressed **Pair** and Wii U SYNC; it connected.
+3. Entered vWii mode and pressed **Reconnect**; it reconnected.
+4. Powered nextMote off and back on; it reconnected in vWii and worked.
+5. While connected in vWii, reset the Wii U. After it reopened, the nextMote input the console required to enter vWii did not work initially; pressing **Reconnect** restored operation.
+
+This user-reported sequence verifies fresh Pair connections to the DolphinBar and Wii U, saved-host Reconnect in vWii, working vWii reconnection after a nextMote power-cycle, and Reconnect recovery after a Wii U reset. The user describes the result as nearly perfect. No serial/HCI trace was captured for these console steps. Direct Wii U-to-vWii transition without pressing Reconnect, Wii U Menu/game input beyond the single recovery sequence, broader game coverage, and a long-duration soak remain separate validation gates.
 
 The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, I confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
 
@@ -69,7 +79,7 @@ The firmware does **not** yet provide:
 - A real Nunchuk, Classic Controller or other extension; no analog stick is available.
 - Live accelerometer/motion data, smoothed pointer behavior across games, speaker output, and rumble. Mirrored-axis pointer and button operation is confirmed in Wii Sports and Mario Kart only.
 - Complete EEPROM/calibration and extension-I2C register behavior. The firmware returns a valid synthetic calibration map and emulates only the IR register behavior seen in the trace; it is not a full EEPROM/I2C device model. Memory reads are queued and paced in 10 ms intervals between 16-byte reports.
-- Full game-control coverage beyond the observed Wii U Menu/vWii Plus/Minus input and pointer, original Wii compatibility, D-pad/motion reports, Wii U/vWii reconnect across mode changes, and soak tests remain unverified. PC saved-host Reconnect passed three cycles, but PC input-event delivery has not been tested.
+- Full game-control coverage beyond the observed Wii U Menu/vWii Plus/Minus input and pointer, original Wii compatibility, D-pad/motion reports, direct Wii U-to-vWii transition without Reconnect, Wii U Menu/game input beyond the single Reconnect-recovery event, and soak tests remain unverified. The user reported successful vWii Reconnect, Wii U-reset recovery, and power-cycle recovery; PC saved-host Reconnect passed three cycles, but PC input-event delivery has not been tested.
 
 Some games require extension or motion data and will not work with this implementation. The current FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional wiimote initialization/report handling beyond pairing and a button report.
 
