@@ -403,9 +403,53 @@ static void test_nunchuk(void)
     assert(wiimote_reports_set_nunchuk_attached(true));
     wiimote_nunchuk_get_status(&status);
     assert(!status.encrypted && !status.unsupported_key);
+
+    /* MotionPlus with the Nunchuk on its passthrough port. */
+    wiimote_motion_plus_reset();
+    bool changed = true;
+    const uint8_t plain_mode = 0x04;
+    assert(wiimote_motion_plus_write(0x53, 0xfe, &plain_mode, 1, &error, &changed));
+    assert(!changed && wiimote_motion_plus_mode() == 0x04);
+    imu.gyro_available = false;
+    for (int i = 0; i < 2; ++i) {
+        wiimote_reports_send_data(0x35);
+        assert((ext[5] & 0x02) && (ext[4] & 0x01));
+    }
+    assert(wiimote_motion_plus_write(0x52, 0xf0, &init, 1, &error, &changed) && changed);
+    const uint8_t pass_mode = 0x05;
+    assert(wiimote_motion_plus_write(0x53, 0xfe, &pass_mode, 1, &error, &changed));
+    assert(!changed && wiimote_motion_plus_mode() == 0x05);
+    input.stick_x = 0x31; input.stick_y = 0xc2;
+    input.accel[0] = 0x2ab; input.accel[1] = 0x156; input.accel[2] = 0x3fd;
+    input.c = true; input.z = false;
+    wiimote_nunchuk_set_input(&input);
+    unsigned mp_frames = 0, nc_frames = 0;
+    for (int i = 0; i < 6; ++i) {
+        wiimote_reports_send_data(0x37);
+        const uint8_t *e = received + 15;
+        assert(e[4] & 0x01);
+        if (e[5] & 0x02) {
+            ++mp_frames;
+            continue;
+        }
+        ++nc_frames;
+        assert(e[0] == 0x31 && e[1] == 0xc2 && (e[5] & 0x03) == 0);
+        const unsigned ax = (unsigned)(e[2] << 2) | ((e[5] >> 3) & 2);
+        const unsigned ay = (unsigned)(e[3] << 2) | ((e[5] >> 4) & 2);
+        const unsigned az = (unsigned)((e[4] & 0xfe) << 2) | ((e[5] >> 5) & 6);
+        assert(ax == (0x2ab & ~1U) && ay == (0x156 & ~1U) && az == (0x3fd & ~1U));
+        assert(!(e[5] & 0x08) && (e[5] & 0x04)); /* C pressed, Z released */
+    }
+    assert(mp_frames == 3 && nc_frames == 3);
+    wiimote_nunchuk_set_attached(false);
+    for (int i = 0; i < 2; ++i) {
+        wiimote_reports_send_data(0x37);
+        assert((received[15 + 5] & 0x02) && !(received[15 + 4] & 0x01));
+    }
+    wiimote_motion_plus_reset();
     wiimote_state_close();
     sends = 0;
-    assert(wiimote_reports_set_nunchuk_attached(false));
+    assert(!wiimote_reports_set_nunchuk_attached(false));
     assert(sends == 0);
 }
 int main(void)

@@ -14,6 +14,9 @@
 
 void wiimote_motion_plus_reset(void);
 bool wiimote_motion_plus_is_active(void);
+/* Activation mode written to 0xfe (0x04 plain, 0x05 Nunchuk passthrough,
+ * 0x07 Classic passthrough), or 0 when inactive. */
+uint8_t wiimote_motion_plus_mode(void);
 
 /* Return true when the access was handled by the M+; *error is then valid. */
 bool wiimote_motion_plus_read(uint8_t slave, uint16_t address, uint8_t length,

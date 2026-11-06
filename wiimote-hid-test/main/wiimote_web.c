@@ -347,7 +347,7 @@ static const char INDEX_HTML[] =
     "ncStatus.textContent=(d.attached?'Connected':'Disconnected')+' · stick '+d.stick.join(', ')+"
     "(d.c?' · C':'')+(d.z?' · Z':'')+(d.encrypted?(d.unsupported_key?"
     "' · encryption key unsupported':' · encrypted'):'')+(d.attached&&d.motion_plus_active?"
-    "' · hidden by active MotionPlus':'')}"
+    "(d.mp_mode===5?' · via MotionPlus passthrough':' · behind MotionPlus (not passthrough)'):'')}"
     "async function ncPost(body){const r=await fetch('/api/nunchuk',{method:'POST',"
     "headers:{'Content-Type':'application/x-www-form-urlencoded'},body});"
     "if(!r.ok)throw Error(await r.text());ncShow(await r.json())}"
@@ -663,7 +663,7 @@ static esp_err_t send_nunchuk_state(httpd_req_t *req)
                           "{\"attached\":%s,\"source\":\"web\",\"stick\":[%u,%u],"
                           "\"accel\":[%u,%u,%u],\"c\":%s,\"z\":%s,\"encrypted\":%s,"
                           "\"unsupported_key\":%s,\"encryption_enables\":%lu,"
-                          "\"motion_plus_active\":%s}",
+                          "\"motion_plus_active\":%s,\"mp_mode\":%u}",
                           status.attached ? "true" : "false",
                           status.input.stick_x, status.input.stick_y,
                           status.input.accel[0], status.input.accel[1], status.input.accel[2],
@@ -671,7 +671,8 @@ static esp_err_t send_nunchuk_state(httpd_req_t *req)
                           status.encrypted ? "true" : "false",
                           status.unsupported_key ? "true" : "false",
                           (unsigned long)status.encryption_enables,
-                          wiimote_motion_plus_is_active() ? "true" : "false");
+                          wiimote_motion_plus_is_active() ? "true" : "false",
+                          wiimote_motion_plus_mode());
     if (length < 0 || (size_t)length >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "nunchuk response formatting failed");

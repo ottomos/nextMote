@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "wiimote_nunchuk.h"
 #include "wiimote_protocol.h"
 
 /*
@@ -103,6 +104,14 @@ bool wiimote_motion_plus_is_active(void)
     bool active = s_active;
     portEXIT_CRITICAL(&s_mux);
     return active;
+}
+
+uint8_t wiimote_motion_plus_mode(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    const uint8_t mode = s_active ? s_regs[MP_REG_ID + 4] : 0;
+    portEXIT_CRITICAL(&s_mux);
+    return mode;
 }
 
 static void advance_challenge_locked(int64_t now)
@@ -214,7 +223,9 @@ bool wiimote_motion_plus_write(uint8_t slave, uint16_t address, const uint8_t *d
             const uint8_t mode = s_regs[MP_REG_MODE];
             if (is_activation_mode(mode)) {
                 activate_locked(mode, now);
-                *status_changed = true;
+                /* WiiBrew: activation reports a plug event only when nothing is
+                 * attached to the M+ passthrough port. */
+                *status_changed = !wiimote_nunchuk_is_attached();
                 event = "activated";
             }
         }
@@ -272,7 +283,7 @@ void wiimote_motion_plus_encode(uint8_t output[WIIMOTE_MOTION_PLUS_DATA_LEN],
     output[1] = (uint8_t)roll;
     output[2] = (uint8_t)pitch;
     output[3] = (uint8_t)(((yaw >> 8) << 2) | (yaw_slow ? 0x02U : 0U) | (pitch_slow ? 0x01U : 0U));
-    /* Bit 0: extension on the M+ passthrough port (none). */
+    /* Bit 0 (extension on the M+ passthrough port) is set by the caller. */
     output[4] = (uint8_t)(((roll >> 8) << 2) | (roll_slow ? 0x02U : 0U));
     /* Bit 1: this is M+ data (not passthrough extension data). */
     output[5] = (uint8_t)(((pitch >> 8) << 2) | 0x02U);

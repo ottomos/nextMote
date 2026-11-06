@@ -70,9 +70,9 @@ class Bar:
         self.send([0x15, 0x00])
         return self.wait_for(lambda p: p[0] == 0x20, 1.0)[0]
 
-    def write_ext(self, address: int, data: bytes) -> int | None:
+    def write_ext(self, address: int, data: bytes, page: int = 0xA4) -> int | None:
         assert 0 < len(data) <= 16
-        self.send(bytes([0x16, 0x04, 0xA4, 0x00, address, len(data)]) + data.ljust(16, b"\0"))
+        self.send(bytes([0x16, 0x04, page, 0x00, address, len(data)]) + data.ljust(16, b"\0"))
         ack, _ = self.wait_for(lambda p: p[0] == 0x22 and p[3] == 0x16, 1.0)
         return None if ack is None else ack[4]
 
@@ -272,7 +272,43 @@ def main() -> int:
         ok, _, last = wait_ext(bar, {"sx": 128, "z": False})
         check(ok, "plain stream after disabling encryption", str(last))
 
-        # 6. Unplug.
+        # 6. MotionPlus Nunchuk passthrough (WiiBrew mode 0x05), as WSR uses it.
+        state = api(args.host)
+        if "mp_mode" in state:
+            bar.set_mode(0x35)
+            bar.drain(0.1)
+            check(bar.write_ext(0xF0, b"\x55", page=0xA6) == 0, "write 0x55 -> 0xA600F0 (M+ init)")
+            check(bar.write_ext(0xFE, b"\x05", page=0xA6) == 0, "write 0x05 -> 0xA600FE (passthrough)")
+            read = bar.read_ext(0xFA, 6)
+            check(read is not None and read == (0, bytes([0, 0, 0xA4, 0x20, 0x05, 0x05])),
+                  "active ID is M+ Nunchuk passthrough", read[1].hex() if read else "no reply")
+            check(api(args.host)["mp_mode"] == 5, "API reports mp_mode 5")
+            api(args.host, {"sx": 0xA0, "sy": 0x60, "c": 1, "z": 0})
+            bar.set_mode(0x35)
+            first, _ = bar.wait_for(lambda p: p[0] == 0x35 and not p[11] & 0x02 and p[6] == 0xA0
+                                    and not p[11] & 0x08, 3.0)
+            check(first is not None, "web input reaches passthrough frames")
+            frames = [ext_bytes(p) for p in bar.drain(0.6) if p[0] == 0x35]
+            mp = [e for e in frames if e[5] & 0x02]
+            nc = [e for e in frames if not e[5] & 0x02]
+            # Frames dropped over the air can put two of a kind next to each other.
+            repeats = sum((a[5] & 0x02) == (b[5] & 0x02) for a, b in zip(frames, frames[1:]))
+            check(len(frames) > 10 and repeats <= len(frames) // 10,
+                  "M+ and Nunchuk frames alternate",
+                  f"{len(mp)} M+ / {len(nc)} Nunchuk, {repeats} back-to-back repeats")
+            check(bool(frames) and all(e[4] & 0x01 for e in frames), "extension-connected bit set")
+            check(bool(nc) and all(e[0] == 0xA0 and e[1] == 0x60 and not e[5] & 0x08 and e[5] & 0x04
+                                   for e in nc),
+                  "passthrough frames carry web stick and C", nc[-1].hex() if nc else "none")
+            api(args.host, {"sx": 128, "sy": 128, "c": 0})
+            check(bar.write_ext(0xF0, b"\x55") == 0, "write 0x55 -> 0xA400F0 (M+ deactivate)")
+            bar.drain(0.3)
+            check(api(args.host)["mp_mode"] == 0, "M+ deactivated")
+            bar.set_mode(0x35)
+            ok, _, last = wait_ext(bar, {"sx": 128, "c": False})
+            check(ok, "plain Nunchuk stream after M+ deactivation", str(last))
+
+        # 7. Unplug.
         api(args.host, {"attached": 0})
         status, _ = bar.wait_for(lambda p: p[0] == 0x20, 1.5)
         check(status is not None and not (status[3] & 0x02), "detach: unsolicited status, ext bit clear",

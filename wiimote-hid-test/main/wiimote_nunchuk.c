@@ -241,3 +241,25 @@ void wiimote_nunchuk_encode(uint8_t *output, uint8_t length)
     copy_out_locked(NC_REG_DATA, length, output);
     portEXIT_CRITICAL(&s_mux);
 }
+
+void wiimote_nunchuk_encode_passthrough(uint8_t output[WIIMOTE_NUNCHUK_DATA_LEN])
+{
+    portENTER_CRITICAL(&s_mux);
+    ensure_initialized_locked();
+    update_data_locked();
+    uint8_t d[WIIMOTE_NUNCHUK_DATA_LEN];
+    memcpy(d, &s_regs[NC_REG_DATA], sizeof(d));
+    portEXIT_CRITICAL(&s_mux);
+
+    output[0] = d[0];
+    output[1] = d[1];
+    output[2] = d[2];
+    output[3] = d[3];
+    output[4] = (uint8_t)((d[4] & 0xfeU) | 0x01U);
+    output[5] = (uint8_t)(((d[4] & 0x01U) << 7) | /* AZ<2> */
+                          ((d[5] & 0x80U) >> 1) | /* AZ<1> */
+                          (d[5] & 0x20U) |        /* AY<1> */
+                          ((d[5] & 0x08U) << 1) | /* AX<1> */
+                          ((d[5] & 0x02U) << 2) | /* C */
+                          ((d[5] & 0x01U) << 2)); /* Z */
+}

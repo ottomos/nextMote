@@ -41,3 +41,8 @@ bool wiimote_nunchuk_write(uint8_t slave, uint16_t address, const uint8_t *data,
 
 /* Report bytes as streamed from register 0x00 (encrypted when the host enabled it). */
 void wiimote_nunchuk_encode(uint8_t *output, uint8_t length);
+
+/* Nunchuk frame as relayed by a MotionPlus in passthrough mode 0x05 (WiiBrew):
+ * accel LSBs dropped, C/Z moved to byte 5 bits 3/2, byte 4 bit 0 = extension
+ * connected, byte 5 bit 1 = 0 (extension data). Always unencrypted. */
+void wiimote_nunchuk_encode_passthrough(uint8_t output[WIIMOTE_NUNCHUK_DATA_LEN]);
