@@ -2042,6 +2042,13 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         ESP_LOGI(TAG, "HID protocol mode=%u (only report mode supported)",
                  param->set_protocol.protocol_mode);
         break;
+    case ESP_HIDD_SEND_REPORT_EVT:
+        if (param->send_report.status != ESP_HIDD_SUCCESS) {
+            ESP_LOGW(TAG, "HID send id=0x%02x failed status=%d reason=%u",
+                     param->send_report.report_id, param->send_report.status,
+                     param->send_report.reason);
+        }
+        break;
     case ESP_HIDD_REPORT_ERR_EVT:
         ESP_LOGI(TAG, "HID handshake result=%d reason=%u",
                  param->report_err.status, param->report_err.reason);

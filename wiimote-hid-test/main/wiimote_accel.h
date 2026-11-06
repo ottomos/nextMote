@@ -15,7 +15,7 @@
 /* A/B switch: 0 keeps the BNO08x for the web page only; HID gets neutral
  * acceleration and the 20 ms sensor HID task is not started. */
 #ifndef NEXTMOTE_SEND_IMU_TO_HID
-#define NEXTMOTE_SEND_IMU_TO_HID 0
+#define NEXTMOTE_SEND_IMU_TO_HID 1
 #endif
 
 /* Mounting: source axes 0=X, 1=Y, 2=Z; signs must be +1 or -1. */

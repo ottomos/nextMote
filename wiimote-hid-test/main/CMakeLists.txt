@@ -39,6 +39,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
                            WIIMOTE_DIAGNOSTIC_GIAC_ONLY=$<BOOL:${WIIMOTE_DIAGNOSTIC_GIAC_ONLY}>
                            WIIMOTE_UPSTREAM_DISCOVERY_BASELINE=$<BOOL:${WIIMOTE_UPSTREAM_DISCOVERY_BASELINE}>
                            WIIMOTE_DIAGNOSTIC_RADIO_ONLY=$<BOOL:${WIIMOTE_DIAGNOSTIC_RADIO_ONLY}>)
+if(DEFINED NEXTMOTE_SEND_IMU_TO_HID)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+                               NEXTMOTE_SEND_IMU_TO_HID=$<BOOL:${NEXTMOTE_SEND_IMU_TO_HID}>)
+endif()
 
 idf_component_get_property(BLUEDROID_BT_COMPONENT_DIR bt COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} PRIVATE
@@ -71,7 +75,10 @@ target_compile_definitions(${BLUEDROID_BT_COMPONENT_LIB} PRIVATE
                            BTM_DEFAULT_DISC_WINDOW=${WIIMOTE_BT_INQUIRY_SCAN_WINDOW}
                            BTM_DEFAULT_DISC_INTERVAL=${WIIMOTE_BT_INQUIRY_SCAN_INTERVAL}
                            BTM_DEFAULT_CONN_WINDOW=${WIIMOTE_BT_PAGE_SCAN_WINDOW}
-                           BTM_DEFAULT_CONN_INTERVAL=${WIIMOTE_BT_PAGE_SCAN_INTERVAL})
+                           BTM_DEFAULT_CONN_INTERVAL=${WIIMOTE_BT_PAGE_SCAN_INTERVAL}
+                           # Role switch + hold + park, no sniff (0x0004): the DolphinBar
+                           # rejects sniff, and Bluedroid otherwise retries it after every report.
+                           BTA_DM_LINK_POLICY_SETTINGS=0x000B)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
                            WIIMOTE_BT_INQUIRY_SCAN_WINDOW=${WIIMOTE_BT_INQUIRY_SCAN_WINDOW}
                            WIIMOTE_BT_INQUIRY_SCAN_INTERVAL=${WIIMOTE_BT_INQUIRY_SCAN_INTERVAL}
