@@ -7,7 +7,6 @@
 #include "ir_camera.h"
 #include "wiimote_reports.h"
 #include "wiimote_web.h"
-#include "nextmote_cores.h"
 
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
 #define IR_CAMERA_POLL_MS 50
@@ -45,8 +44,8 @@ void ir_camera_service_start(void)
         camera_state.detected = true;
         wiimote_reports_set_camera_state(&camera_state);
         wiimote_web_set_camera_state(&camera_state);
-        BaseType_t task_result = xTaskCreatePinnedToCore(ir_camera_task, "ir_camera", 3072,
-                                             NULL, 5, NULL, NEXTMOTE_APP_CORE);
+        BaseType_t task_result = xTaskCreate(ir_camera_task, "ir_camera", 3072,
+                                             NULL, 5, NULL);
         if (task_result != pdPASS) {
             ESP_LOGE(TAG, "Failed to create IR camera polling task");
         }

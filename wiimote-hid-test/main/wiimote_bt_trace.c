@@ -15,7 +15,6 @@
 #include "stack/hcimsgs.h"
 #include "wiimote_bt_trace.h"
 #include "wiimote_bt_trace_packet.h"
-#include "nextmote_cores.h"
 
 #define TRACE_PACKET_BYTES 16
 #define TRACE_QUEUE_LENGTH 32
@@ -132,8 +131,8 @@ esp_err_t wiimote_bt_trace_start(void)
         ESP_LOGE(TAG, "Could not allocate HCI trace queue");
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreatePinnedToCore(log_packets, "wiimote_bt_trace", 3072, NULL,
-                    tskIDLE_PRIORITY + 1, NULL, NEXTMOTE_COMM_CORE) != pdPASS) {
+    if (xTaskCreate(log_packets, "wiimote_bt_trace", 3072, NULL,
+                    tskIDLE_PRIORITY + 1, NULL) != pdPASS) {
         vQueueDelete(s_trace_queue);
         s_trace_queue = NULL;
         ESP_LOGE(TAG, "Could not create HCI trace logging task");

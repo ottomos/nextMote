@@ -12,7 +12,6 @@
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "sensor_i2c_bus.h"
-#include "nextmote_cores.h"
 
 #define IMU_I2C_SPEED_HZ 100000
 #define IMU_I2C_TIMEOUT_MS 100
@@ -214,8 +213,8 @@ esp_err_t imu_service_start(void)
     s_state.address = detected_address;
     portEXIT_CRITICAL(&s_state_mux);
 
-    BaseType_t task_result = xTaskCreatePinnedToCore(imu_service_task, "imu_service", 4096,
-                                         (void *)s_bno, 5, NULL, NEXTMOTE_APP_CORE);
+    BaseType_t task_result = xTaskCreate(imu_service_task, "imu_service", 4096,
+                                         (void *)s_bno, 5, NULL);
     if (task_result != pdPASS) {
         ESP_LOGE(TAG, "Failed to create IMU service task");
         bno085_deinit(s_bno);

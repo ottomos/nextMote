@@ -24,7 +24,6 @@
 #include "esp_gap_bt_api.h"
 #include "wiimote_bond_json.h"
 #include "wiimote_bt_trace.h"
-#include "nextmote_cores.h"
 #endif
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -812,7 +811,6 @@ static void start_http_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 13;
     config.lru_purge_enable = true;
-    config.core_id = NEXTMOTE_APP_CORE;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP server start failed: %s", esp_err_to_name(err));

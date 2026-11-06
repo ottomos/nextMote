@@ -11,7 +11,6 @@
 #include "wiimote_protocol.h"
 #include "wiimote_reports.h"
 #include "wiimote_accel.h"
-#include "nextmote_cores.h"
 
 static const char *TAG = "wiimote_memory";
 
@@ -145,9 +144,8 @@ esp_err_t wiimote_memory_start(void)
 {
     if (s_memory_read_task != NULL) return ESP_OK;
 
-    BaseType_t result = xTaskCreatePinnedToCore(memory_read_task, "memory_read", 3072,
-                                    NULL, 5, &s_memory_read_task,
-                                    NEXTMOTE_COMM_CORE);
+    BaseType_t result = xTaskCreate(memory_read_task, "memory_read", 3072,
+                                    NULL, 5, &s_memory_read_task);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Failed to create memory-read task");
         return ESP_ERR_NO_MEM;
