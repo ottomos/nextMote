@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>espMote — Hardware Assembly Guide</title>
+<title>nextMote — Hardware Assembly Guide</title>
 <style>
   :root {
     --5v: #d64545;
@@ -164,7 +164,7 @@
 <div class="wrap">
 
 <header class="hero">
-  <h1>espMote — Hardware Assembly Guide</h1>
+  <h1>nextMote — Hardware Assembly Guide</h1>
   <p>
     Step-by-step wiring for the <strong>ESP32-WROOM-32</strong>, the
     <strong>DFRobot IR Positioning Camera (SEN0158)</strong>, and the
@@ -175,8 +175,8 @@
 </header>
 
 <div class="danger">
-  <strong>⚠️ Power off before wiring. Do not put 5&nbsp;V on espMote GPIO.</strong>
-  The SEN0158 works from 3.3–5&nbsp;V. The tested wiring powers it from espMote
+  <strong>⚠️ Power off before wiring. Do not put 5&nbsp;V on nextMote GPIO.</strong>
+  The SEN0158 works from 3.3–5&nbsp;V. The tested wiring powers it from nextMote
   <strong>3V3</strong> and connects its I2C lines directly to GPIO21/22. If you instead
   power the camera from 5&nbsp;V, route its SDA/SCL through the level shifter.
   Keep the BNO08X on the 3.3&nbsp;V I2C side.
@@ -194,7 +194,7 @@
       <tr><td>1 optional</td><td>4-channel bi-directional logic level shifter</td><td>Needed only when powering the SEN0158 from 5&nbsp;V</td></tr>
       <tr><td>1</td><td>GY-BNO08X breakout (pink board)</td><td>I2C IMU, address 0x4A or 0x4B</td></tr>
       <tr><td>~10</td><td>Jumper wires (male–female helpful)</td><td>Color-coded to match the guide</td></tr>
-      <tr><td>1</td><td>USB cable (5&nbsp;V)</td><td>Powers espMote</td></tr>
+      <tr><td>1</td><td>USB cable (5&nbsp;V)</td><td>Powers nextMote</td></tr>
       <tr><td>—</td><td>Breadboard (optional)</td><td>Makes the shared rails easier</td></tr>
     </tbody>
   </table>
@@ -224,7 +224,7 @@
 
 <h3>3.1 ESP32-WROOM-32 DevKit</h3>
 <div class="card">
-  <p>Only the pins used in this project are shown. The espMote is powered from USB (5&nbsp;V).</p>
+  <p>Only the pins used in this project are shown. The nextMote is powered from USB (5&nbsp;V).</p>
   <div class="pinbox">
     <div class="pin"><span class="bar" style="background:var(--3v3)"></span><span class="lbl">3V3</span><span class="fn">3.3&nbsp;V rail → BNO, tested camera power, optional shifter LV</span></div>
     <div class="pin"><span class="bar" style="background:var(--gnd)"></span><span class="lbl">GND</span><span class="fn">common ground</span></div>
@@ -249,10 +249,10 @@
     <div class="pin"><span class="bar" style="background:var(--scl)"></span><span class="lbl">Green — SCL</span><span class="fn">I2C clock</span></div>
   </div>
   <p class="note">
-    <strong>Tested option:</strong> red VCC → espMote 3V3, black GND → common ground,
+    <strong>Tested option:</strong> red VCC → nextMote 3V3, black GND → common ground,
     yellow SDA → GPIO21, and green SCL → GPIO22. No shifter is needed in this
     3.3&nbsp;V configuration. For the optional 5&nbsp;V camera setup, use the shifter
-    on both SDA and SCL; never put the camera's 5&nbsp;V pull-ups directly on espMote pins.
+    on both SDA and SCL; never put the camera's 5&nbsp;V pull-ups directly on nextMote pins.
   </p>
 </div>
 
@@ -273,7 +273,7 @@
   </div>
   <p class="note">
     <strong>Naming:</strong> “HV” = high voltage side (5&nbsp;V, camera side).
-    “LV” = low voltage side (3.3&nbsp;V, espMote/BNO side). The middle number is the channel.
+    “LV” = low voltage side (3.3&nbsp;V, nextMote/BNO side). The middle number is the channel.
     Either <code>GND</code> pin works — they are the same net.
   </p>
 </div>
@@ -312,33 +312,33 @@
     <li>
       <strong>Power rails first.</strong>
       <ul>
-        <li>espMote <code>GND</code> → BNO08X <code>GND</code> (black)</li>
-        <li>espMote <code>GND</code> → camera <code>black</code> (black)</li>
-        <li>If using the optional 5&nbsp;V camera setup: espMote <code>3V3</code> → shifter <code>LV</code> and <code>VIN/5V</code> → shifter <code>HV</code>.</li>
+        <li>nextMote <code>GND</code> → BNO08X <code>GND</code> (black)</li>
+        <li>nextMote <code>GND</code> → camera <code>black</code> (black)</li>
+        <li>If using the optional 5&nbsp;V camera setup: nextMote <code>3V3</code> → shifter <code>LV</code> and <code>VIN/5V</code> → shifter <code>HV</code>.</li>
       </ul>
       <p class="note">Bring all grounds to a single common point.</p>
     </li>
     <li>
       <strong>Power the boards.</strong>
       <ul>
-        <li>espMote <code>3V3</code> → BNO08X <code>VCC/VIN</code> (orange)</li>
-        <li>Tested: espMote <code>3V3</code> → camera <code>red (VCC)</code> (orange).</li>
-        <li>Optional 5&nbsp;V camera setup: espMote <code>VIN/5V</code> → camera <code>red</code> (red). Do not also connect camera VCC to 3V3.</li>
+        <li>nextMote <code>3V3</code> → BNO08X <code>VCC/VIN</code> (orange)</li>
+        <li>Tested: nextMote <code>3V3</code> → camera <code>red (VCC)</code> (orange).</li>
+        <li>Optional 5&nbsp;V camera setup: nextMote <code>VIN/5V</code> → camera <code>red</code> (red). Do not also connect camera VCC to 3V3.</li>
       </ul>
     </li>
     <li>
       <strong>Shared I2C data lines — 3.3&nbsp;V side.</strong>
       <ul>
-        <li>espMote <code>GPIO21</code> → BNO08X <code>SDA</code> and, for direct 3.3&nbsp;V camera power, camera yellow <code>SDA</code>.</li>
-        <li>espMote <code>GPIO22</code> → BNO08X <code>SCL</code> and, for direct 3.3&nbsp;V camera power, camera green <code>SCL</code>.</li>
-        <li>For the optional 5&nbsp;V camera setup, connect GPIO21/GPIO22 to shifter <code>LV1/LV2</code>; camera SDA/SCL go to <code>HV1/HV2</code> instead of directly to espMote bus.</li>
+        <li>nextMote <code>GPIO21</code> → BNO08X <code>SDA</code> and, for direct 3.3&nbsp;V camera power, camera yellow <code>SDA</code>.</li>
+        <li>nextMote <code>GPIO22</code> → BNO08X <code>SCL</code> and, for direct 3.3&nbsp;V camera power, camera green <code>SCL</code>.</li>
+        <li>For the optional 5&nbsp;V camera setup, connect GPIO21/GPIO22 to shifter <code>LV1/LV2</code>; camera SDA/SCL go to <code>HV1/HV2</code> instead of directly to nextMote bus.</li>
       </ul>
     </li>
     <li>
       <strong>BNO08X reset and data-ready lines.</strong>
       <ul>
-        <li>espMote <code>GPIO26</code> → BNO08X <code>RST</code> (blue)</li>
-        <li>espMote <code>GPIO27</code> → BNO08X <code>INT</code> (purple, active-low data-ready)</li>
+        <li>nextMote <code>GPIO26</code> → BNO08X <code>RST</code> (blue)</li>
+        <li>nextMote <code>GPIO27</code> → BNO08X <code>INT</code> (purple, active-low data-ready)</li>
       </ul>
       <p class="note">The ESP-IDF driver requires INT. Keep PS0/PS1 in I2C mode; tie both low if your board does not provide default pull-downs. Leave ADR/AD0 at the board default; firmware probes 0x4A and 0x4B.</p>
     </li>
@@ -352,7 +352,7 @@
 <div class="card">
   <table>
     <thead>
-      <tr><th>From (espMote)</th><th>To</th><th>Wire color</th><th>Purpose</th></tr>
+      <tr><th>From (nextMote)</th><th>To</th><th>Wire color</th><th>Purpose</th></tr>
     </thead>
     <tbody>
       <tr><td><code>GND</code></td><td>BNO08X <code>GND</code></td><td><span class="sw blk"></span>black</td><td>common ground</td></tr>
@@ -384,11 +384,11 @@ GPIO22 (SCL) ───────────── LV2 ⇄ HV2 ─────
 GPIO22 (SCL) ─────────────────────────────────────────── BNO SCL
 GPIO26 (RST) ─────────────────────────────────────────── BNO RST
 GPIO27 (INT, active low) ───────────────────────────────── BNO INT</pre>
-  <p class="note">Do not also connect camera VCC to 3V3 in this option. Never connect 5 V camera SDA/SCL directly to espMote GPIO.</p>
+  <p class="note">Do not also connect camera VCC to 3V3 in this option. Never connect 5 V camera SDA/SCL directly to nextMote GPIO.</p>
 </div>
 <div class="card">
 <h3>Option B — tested: 3.3 V camera, no level shifter</h3>
-<p>Camera and IMU share espMote's 3.3 V I2C bus directly.</p>
+<p>Camera and IMU share nextMote's 3.3 V I2C bus directly.</p>
 <pre class="wiring-diagram">ESP32-WROOM-32                    SEN0158                 GY-BNO08X
 3V3  ──────────────────────────── red VCC ────────────── VCC/VIN
 GND  ──────────────────────────── black GND ──────────── GND
@@ -402,8 +402,8 @@ GPIO27 (INT, active low) ──────────────────�
 <h2>7. Power-on &amp; verification</h2>
 <div class="card">
   <ol class="steps">
-    <li>Plug the USB cable in. The espMote's power LED should light.</li>
-    <li>From <code>firmware/wiimote-hid-test</code>, build and flash the ESP-IDF project (<code>idf.py build</code>, then <code>idf.py -p PORT -b 115200 flash</code>). Replace <code>PORT</code> with espMote serial port.</li>
+    <li>Plug the USB cable in. The nextMote's power LED should light.</li>
+    <li>From <code>firmware/wiimote-hid-test</code>, build and flash the ESP-IDF project (<code>idf.py build</code>, then <code>idf.py -p PORT -b 115200 flash</code>). Replace <code>PORT</code> with nextMote serial port.</li>
     <li>Look for the startup lines:
       <ul>
         <li><code>SEN0158 initialized with DFRobot default profile</code> → camera initialized.</li>
@@ -429,7 +429,7 @@ GPIO27 (INT, active low) ──────────────────�
 <div class="info">
   <strong>Note on the Funduino board</strong> — the Funduino is <em>not</em> wired in this
   build. It will be added later as an optional, enable/disable feature in firmware.
-  Assemble and validate espMote + camera + BNO setup above first.
+  Assemble and validate nextMote + camera + BNO setup above first.
 </div>
 
 <p class="note">

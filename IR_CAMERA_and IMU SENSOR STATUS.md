@@ -31,7 +31,7 @@ I later found that removing camera power changed the page to “Camera not detec
 
 After I connected the SEN0158 and used the DolphinBar as an IR sensor bar, `/api/camera` reported `detected:true`, `available:true`, and two visible points (`(873,459)` and `(520,715)`); the other two slots were `(1023,1023)`. I saw the pointer become visible in vWii after increasing the camera/sensor-bar separation. I did not measure the exact distance or screen-tracking accuracy. This confirms a visible pointer in that setup only; it does not establish calibrated or stable tracking across games. The DolphinBar's Bluetooth-host function was not used during this IR test.
 
-I later pressed DolphinBar SYNC, connected espMote to Dolphin, and confirmed the buttons worked. That is a Bluetooth-host test, distinct from the IR sensor-bar observation above; I did not capture camera/serial traces for it.
+I later pressed DolphinBar SYNC, connected nextMote to Dolphin, and confirmed the buttons worked. That is a Bluetooth-host test, distinct from the IR sensor-bar observation above; I did not capture camera/serial traces for it.
 
 ## BNO08x IMU orientation
 
@@ -93,6 +93,6 @@ idf.py set-target esp32
 idf.py build
 ```
 
-Open the ESPmote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons; the BNO08x orientation panel shows roll/pitch/yaw and a rotating cube. Inspect `/api/camera` for IR points and `/api/imu` for IMU state and Euler angles. For an IMU-only check, disconnect the camera and follow the BNO08x wiring in [ASSEMBLY_GUIDE.html](./ASSEMBLY_GUIDE.html).
+Open the nextMote page at the IP printed by the firmware. The camera plot and point table appear below the virtual buttons; the BNO08x orientation panel shows roll/pitch/yaw and a rotating cube. Inspect `/api/camera` for IR points and `/api/imu` for IMU state and Euler angles. For an IMU-only check, disconnect the camera and follow the BNO08x wiring in [ASSEMBLY_GUIDE.html](./ASSEMBLY_GUIDE.html).
 
 The firmware build and web support are implemented. Camera acquisition at 3.3 V is verified. BNO08x hardware on the current ESP32 wiring, the new INT=GPIO27 connection, and combined camera/IMU operation still require testing.
