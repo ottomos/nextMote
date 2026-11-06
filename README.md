@@ -16,6 +16,8 @@ The product and web-app name is **nextMote**. Its Bluetooth HID identity intenti
 
 **Integration bench follow-up (6 November):** the IMU image was flashed and initially returned fresh acceleration and a connected HID host. The user subsequently reported web status/button fetch failures while Dolphin still reported the remote connected; HTTP at the last known address also timed out. The IMU was disconnected for a requested `main` baseline comparison. Root cause and motion reception remain unverified; preserve this branch as experimental, not a confirmed gameplay pass.
 
+The user subsequently confirmed working buttons on `main`. On returning to the IMU branch, overlapping camera/IMU HTTP polling was corrected with one shared in-flight cycle, response/body timeouts and hidden-page suppression. This addresses a demonstrated request-accumulation risk behind laggy web updates, not a diagnosed Bluetooth race. The polling correction has not yet been flashed or hardware-validated.
+
 - Original Bluetooth-Classic-capable ESP32 (tested on ESP32-WROOM)
 - Mayflash DolphinBar in mode 4
 - ESP-IDF 6.0.x with Bluedroid Classic Bluetooth HID-device support
