@@ -4,7 +4,7 @@ This ESP-IDF project configures the original ESP32 as a Bluetooth Classic HID pe
 
 The product and web-app name is **nextMote**. The Bluetooth HID name intentionally remains `Nintendo RVL-CNT-01` for Wii Remote compatibility. The ESP-IDF CMake project is named `nextMote`; the established workspace path remains `firmware/wiimote-hid-test`.
 
-> **Current implementation status and next steps:** the latest Pair/Reconnect results and Wii U/vWii next-test notes are in [Latest Pair and Reconnect validation](#latest-pair-and-reconnect-validation). The broader workspace experiment log is maintained outside this firmware repository.
+> **Current implementation status and next steps:** the latest Pair/Reconnect results and user-reported Wii U/vWii observations are in [Latest Pair and Reconnect validation](#latest-pair-and-reconnect-validation). The broader workspace experiment log is maintained outside this firmware repository.
 
 ## Previously verified with nextMote (ESP32-WROOM) + Mayflash DolphinBar (mode 4)
 
@@ -47,6 +47,10 @@ The user has since completed a separate Wii U/vWii host sequence, recorded below
 5. While connected in vWii, reset the Wii U. After it reopened, the nextMote input the console required to enter vWii did not work initially; pressing **Reconnect** restored operation.
 
 This user-reported sequence verifies fresh Pair connections to the DolphinBar and Wii U, saved-host Reconnect in vWii, working vWii reconnection after a nextMote power-cycle, and Reconnect recovery after a Wii U reset. The user describes the result as nearly perfect. No serial/HCI trace was captured for these console steps. Direct Wii U-to-vWii transition without pressing Reconnect, Wii U Menu/game input beyond the single recovery sequence, broader game coverage, and a long-duration soak remain separate validation gates.
+
+### User-reported in-game input check - 6 November 2026
+
+The user reports that, inside a game, nextMote's buttons and IR camera worked. The game title and exact mode were not specified, and no matching serial trace was captured. The user describes the exercised setup as working except for the IMU, which is the remaining planned hardware test and has not been tested yet.
 
 The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, I confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
 
