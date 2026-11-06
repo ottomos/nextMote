@@ -8,6 +8,7 @@
 #include "esp_hidd_api.h"
 #include "freertos/task.h"
 #include "imu_service.h"
+#include "nextmote_cores.h"
 #include "wiimote_accel.h"
 #include "wiimote_reports.h"
 #include "wiimote_state.h"
@@ -41,13 +42,15 @@ esp_err_t esp_bt_hid_device_send_report(int type, uint8_t id, uint16_t length,
     ++sends;
     return send_result;
 }
-BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
-                      void *arg, unsigned priority, void *handle)
+BaseType_t xTaskCreatePinnedToCore(void (*entry)(void *), const char *name, unsigned stack,
+                                   void *arg, unsigned priority, void *handle, int core)
 {
     (void)name; (void)stack; (void)arg; (void)priority; (void)handle;
+    assert(core == NEXTMOTE_APP_CORE);
     report_task = entry;
     return pdPASS;
 }
+int xPortGetCoreID(void) { return NEXTMOTE_APP_CORE; }
 TickType_t xTaskGetTickCount(void) { return 0; }
 void vTaskDelayUntil(TickType_t *last, TickType_t period)
 {

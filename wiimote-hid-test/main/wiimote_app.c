@@ -33,6 +33,8 @@
 #include "wiimote_web.h"
 #include "ir_camera_service.h"
 #include "imu_service.h"
+#include "wiimote_accel.h"
+#include "nextmote_cores.h"
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
 #include "wiimote_bt_trace.h"
 #endif
@@ -1024,8 +1026,9 @@ static esp_err_t request_bluetooth_stack_restart(
     if (restart_active) return ESP_OK;
 
     set_bluetooth_stack_restart_active(true);
-    BaseType_t task_result = xTaskCreate(
-        bluetooth_stack_restart_task, "bt_host_restart", 6144, NULL, 5, NULL);
+    BaseType_t task_result = xTaskCreatePinnedToCore(
+        bluetooth_stack_restart_task, "bt_host_restart", 6144, NULL, 5, NULL,
+        NEXTMOTE_COMM_CORE);
     if (task_result != pdPASS) {
         set_bluetooth_stack_restart_active(false);
         connection_operation_set_state(
@@ -2183,6 +2186,8 @@ void app_main(void)
 #endif
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
     wiimote_controls_init();
+    ESP_LOGI(TAG, "Core layout: comm (BT/Wi-Fi/protocol)=core %d, app (sensors/web/controls)=core %d",
+             NEXTMOTE_COMM_CORE, NEXTMOTE_APP_CORE);
     ir_camera_service_start();
 #if WIIMOTE_DIAGNOSTIC_RADIO_ONLY
     ESP_LOGW(TAG, "RADIO-ONLY DIAGNOSTIC: Wi-Fi/web startup disabled; restore a radio-enabled build after the probe");
@@ -2190,11 +2195,15 @@ void app_main(void)
     wiimote_web_start();
 #endif
 #endif
+#if NEXTMOTE_ENABLE_IMU_MOTION
     ESP_ERROR_CHECK(wiimote_reports_start());
     esp_err_t imu_err = imu_service_start();
     if (imu_err != ESP_OK) {
         ESP_LOGW(TAG, "BNO08x orientation/acceleration service unavailable: %s",
                  esp_err_to_name(imu_err));
     }
+#else
+    ESP_LOGW(TAG, "IMU motion disabled (NEXTMOTE_ENABLE_IMU_MOTION=0): no BNO08x I2C, no sensor HID task");
+#endif
     ESP_ERROR_CHECK(wiimote_controls_start_fake_demo());
 }

@@ -7,6 +7,11 @@
 #define WIIMOTE_ACCEL_ONE_G_BYTE 0x9aU
 #define WIIMOTE_ACCEL_GRAVITY_MS2 9.80665f
 
+/* Isolation switch: 0 skips BNO08x I2C startup and the 20 ms sensor HID task. */
+#ifndef NEXTMOTE_ENABLE_IMU_MOTION
+#define NEXTMOTE_ENABLE_IMU_MOTION 1
+#endif
+
 /* Mounting: source axes 0=X, 1=Y, 2=Z; signs must be +1 or -1. */
 #ifndef WIIMOTE_ACCEL_X_AXIS
 #define WIIMOTE_ACCEL_X_AXIS 0

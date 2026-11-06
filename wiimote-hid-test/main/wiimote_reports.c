@@ -15,6 +15,7 @@
 #include "wiimote_accel.h"
 #include "wiimote_protocol.h"
 #include "wiimote_state.h"
+#include "nextmote_cores.h"
 
 static const char *TAG = "wiimote_reports";
 /* Temporary midpoint of the 0x00-0xff scale until battery voltage is measured. */
@@ -134,6 +135,7 @@ static void sensor_report_task(void *arg)
     bool accel_was_live = false;
     bool send_failed = false;
     TickType_t last_wake = xTaskGetTickCount();
+    ESP_LOGI(TAG, "Sensor HID stream running on core %d", xPortGetCoreID());
 
     for (;;) {
         imu_state_t imu;
@@ -176,8 +178,8 @@ static void sensor_report_task(void *arg)
 
 esp_err_t wiimote_reports_start(void)
 {
-    BaseType_t result = xTaskCreate(sensor_report_task, "sensor_reports", 3072,
-                                    NULL, 5, NULL);
+    BaseType_t result = xTaskCreatePinnedToCore(sensor_report_task, "sensor_reports", 3072,
+                                    NULL, 5, NULL, NEXTMOTE_APP_CORE);
     if (result != pdPASS) {
         ESP_LOGE(TAG, "Failed to create sensor HID reporting task");
         return ESP_ERR_NO_MEM;

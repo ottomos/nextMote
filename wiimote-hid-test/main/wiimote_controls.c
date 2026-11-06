@@ -13,6 +13,7 @@
 #include "wiimote_reports.h"
 #include "wiimote_state.h"
 #include "wiimote_web.h"
+#include "nextmote_cores.h"
 
 #if CONFIG_EXAMPLE_FAKE_BUTTON_DEMO
 #define BUTTON_DEMO_PRESS_MS 500
@@ -96,8 +97,8 @@ static void fake_button_task(void *arg)
 esp_err_t wiimote_controls_start_fake_demo(void)
 {
 #if CONFIG_EXAMPLE_FAKE_BUTTON_DEMO
-    BaseType_t result = xTaskCreate(fake_button_task, "fake_button_demo", 4096,
-                                    NULL, 5, NULL);
+    BaseType_t result = xTaskCreatePinnedToCore(fake_button_task, "fake_button_demo", 4096,
+                                    NULL, 5, NULL, NEXTMOTE_APP_CORE);
     if (result != pdPASS) return ESP_ERR_NO_MEM;
 #endif
     return ESP_OK;
