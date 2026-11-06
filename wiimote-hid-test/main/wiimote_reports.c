@@ -74,11 +74,15 @@ static uint16_t build_data_payload(uint8_t report_id, uint8_t *payload)
     wiimote_state_get_buttons(payload);
     if (report_id == WIIMOTE_REPORT_BUTTONS_ACCEL ||
         report_id == WIIMOTE_REPORT_BUTTONS_ACCEL_IR) {
+#if NEXTMOTE_SEND_IMU_TO_HID
         imu_state_t imu;
         imu_service_get_state(&imu);
         if (!imu.accel_available || !wiimote_accel_encode(payload, imu.accel_ms2)) {
             wiimote_accel_encode_neutral(payload);
         }
+#else
+        wiimote_accel_encode_neutral(payload);
+#endif
     }
 
     uint16_t length;

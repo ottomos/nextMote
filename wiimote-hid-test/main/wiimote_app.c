@@ -2192,7 +2192,11 @@ void app_main(void)
 #endif
 #endif
 #if NEXTMOTE_ENABLE_IMU_MOTION
+#if NEXTMOTE_SEND_IMU_TO_HID
     ESP_ERROR_CHECK(wiimote_reports_start());
+#else
+    ESP_LOGW(TAG, "IMU-to-HID disabled (NEXTMOTE_SEND_IMU_TO_HID=0): web-only IMU, neutral HID accel");
+#endif
     esp_err_t imu_err = imu_service_start();
     if (imu_err != ESP_OK) {
         ESP_LOGW(TAG, "BNO08x orientation/acceleration service unavailable: %s",

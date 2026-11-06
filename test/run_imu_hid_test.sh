@@ -13,7 +13,7 @@ build_and_run() {
         "$root/wiimote-hid-test/main/wiimote_reports.c" \
         "$root/wiimote-hid-test/main/wiimote_state.c" \
         "$root/wiimote-hid-test/main/wiimote_protocol.c" \
-        "$@" -lm -o "$binary"
+        -DNEXTMOTE_SEND_IMU_TO_HID=1 "$@" -lm -o "$binary"
     "$binary"
 }
 
