@@ -9,10 +9,14 @@
 #include "freertos/task.h"
 #include "imu_service.h"
 #include "wiimote_accel.h"
+#include "wiimote_motion_plus.h"
+#include "wiimote_protocol.h"
 #include "wiimote_reports.h"
 #include "wiimote_state.h"
 
 static imu_state_t imu;
+int64_t host_test_time_us;
+static TickType_t expected_period = 20;
 static uint8_t received[32];
 static uint8_t received_id;
 static uint16_t received_length;
@@ -51,7 +55,7 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
 TickType_t xTaskGetTickCount(void) { return 0; }
 void vTaskDelayUntil(TickType_t *last, TickType_t period)
 {
-    assert(period == pdMS_TO_TICKS(20));
+    assert(period == pdMS_TO_TICKS(expected_period));
     *last += period;
     if (tick_action != NULL) tick_action();
     if (--ticks_left == 0) longjmp(task_exit, 1);
@@ -157,7 +161,17 @@ static void test_reports(void)
     assert(received_id == 0x20 && received[0] == 0x19 && received[1] == 0x8c);
     wiimote_reports_send_memory_write_ack(0);
     assert(received_id == 0x22 && received[0] == 0x19 && received[1] == 0x8c);
-    assert(wiimote_reports_send_data(0x37) == ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ);
+    assert(wiimote_reports_send_data(0x37) == 0);
+    assert(received_id == 0x37 && received_length == 21);
+    for (unsigned i = 15; i < 21; ++i) assert(received[i] == 0);
+    wiimote_reports_send_data(0x36);
+    assert(received_length == 21 && received[0] == 0x19);
+    /* Basic IR: x=923 (0x39b), y=567 (0x237) for both points of each pair. */
+    assert(received[2] == 0x9b && received[3] == 0x37 && received[4] == 0xbb);
+    assert(received[5] == 0x9b && received[6] == 0x37);
+    wiimote_reports_send_data(0x3d);
+    assert(received_id == 0x3d && received_length == 21);
+    assert(wiimote_reports_send_data(0x3e) == ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ);
     wiimote_state_close();
     unsigned before = sends;
     wiimote_reports_send_data(0x31);
@@ -209,11 +223,102 @@ static void test_freshness(void)
     state.accel_available = false;
     assert(!imu_service_accel_is_fresh(&state, 1000000));
 }
+static int decode_mp(const uint8_t *d, unsigned axis, bool *slow)
+{
+    /* axis: 0 yaw, 1 roll, 2 pitch */
+    const unsigned value = d[axis] | ((d[3 + axis] >> 2) << 8);
+    if (axis == 0) *slow = d[3] & 2;
+    else if (axis == 1) *slow = d[4] & 2;
+    else *slow = d[3] & 1;
+    return (int)value - 8192;
+}
+static void test_motion_plus(void)
+{
+    uint8_t out[16];
+    uint8_t error = 0xff;
+    bool changed = true;
+    wiimote_motion_plus_reset();
+    assert(!wiimote_motion_plus_is_active());
+    assert(wiimote_motion_plus_read(0x53, 0xfa, 6, out, &error) && error == 0);
+    const uint8_t inactive_id[6] = {0, 0, 0xa6, 0x20, 0, 5};
+    assert(memcmp(out, inactive_id, 6) == 0);
+    assert(!wiimote_motion_plus_read(0x52, 0xfa, 6, out, &error));
+    assert(wiimote_motion_plus_read(0x53, 0x20, 16, out, &error) && error == 0);
+    assert(out[0] == 0x80 && out[1] == 0x00);
+
+    host_test_time_us = 1000000;
+    const uint8_t mode = 0x04;
+    assert(wiimote_motion_plus_write(0x53, 0xfe, &mode, 1, &error, &changed));
+    assert(error == 0 && changed && wiimote_motion_plus_is_active());
+    assert(wiimote_motion_plus_read(0x53, 0xfa, 6, out, &error) && error != 0);
+    assert(wiimote_motion_plus_read(0x52, 0xfa, 6, out, &error) && error == 0);
+    const uint8_t active_id[6] = {0, 0, 0xa4, 0x20, 4, 5};
+    assert(memcmp(out, active_id, 6) == 0);
+    assert(wiimote_motion_plus_read(0x52, 0xf7, 1, out, &error) && out[0] == 0x02);
+    host_test_time_us += 500000;
+    assert(wiimote_motion_plus_read(0x52, 0xf7, 1, out, &error) && out[0] == 0x0e);
+    const uint8_t type = 0;
+    assert(wiimote_motion_plus_write(0x52, 0xf1, &type, 1, &error, &changed) && !changed);
+    assert(wiimote_motion_plus_read(0x52, 0xf7, 1, out, &error) && out[0] == 0x14);
+    host_test_time_us += 30000;
+    assert(wiimote_motion_plus_read(0x52, 0xf7, 1, out, &error) && out[0] == 0x1a);
+
+    wiimote_state_open();
+    wiimote_reports_send_status();
+    assert(received_id == 0x20 && (received[2] & 0x02));
+    imu.gyro_available = true;
+#if WIIMOTE_ACCEL_X_AXIS == 1
+    imu.gyro_rad_s[0] = 0; imu.gyro_rad_s[1] = -1.0f; imu.gyro_rad_s[2] = -20.0f;
+#else
+    imu.gyro_rad_s[0] = 1.0f; imu.gyro_rad_s[1] = 0; imu.gyro_rad_s[2] = -20.0f;
+#endif
+    wiimote_reports_send_data(0x35);
+    assert(received_id == 0x35 && received_length == 21);
+    bool slow;
+    const uint8_t *mp = received + 5;
+    assert(mp[5] & 0x02);
+    int pitch = decode_mp(mp, 2, &slow);
+    assert(slow && pitch > 900 && pitch < 950);
+    int yaw = decode_mp(mp, 0, &slow);
+    assert(!slow && yaw < -4000 && yaw > -4300);
+    assert(decode_mp(mp, 1, &slow) == 0 && slow);
+    imu.gyro_available = false;
+    wiimote_reports_send_data(0x37);
+    mp = received + 15;
+    assert(decode_mp(mp, 0, &slow) == 0 && decode_mp(mp, 2, &slow) == 0);
+
+    assert(wiimote_reports_start() == ESP_OK);
+    wiimote_state_set_report_mode(0x35, true);
+    expected_period = 10;
+    sends = 0; run_ticks(20);
+    assert(sends == 20);
+
+    const uint8_t init = 0x55;
+    assert(wiimote_motion_plus_write(0x52, 0xf0, &init, 1, &error, &changed));
+    assert(changed && !wiimote_motion_plus_is_active());
+    expected_period = 20;
+    sends = 0; run_ticks(5);
+    assert(sends == 5);
+    wiimote_reports_send_status();
+    assert(!(received[2] & 0x02));
+    wiimote_state_close();
+
+    float mapped[3];
+    const float sensor[3] = {1, 2, 3};
+    wiimote_accel_map_gyro(sensor, mapped);
+#if WIIMOTE_ACCEL_X_AXIS == 1
+    /* x<-(-y), y<-x: a rotation about z (det +1), so no extra flip. */
+    assert(mapped[0] == -2 && mapped[1] == 1 && mapped[2] == 3);
+#else
+    assert(mapped[0] == 1 && mapped[1] == 2 && mapped[2] == 3);
+#endif
+}
 int main(void)
 {
     test_freshness();
     test_encoding();
     test_reports();
     test_cadence();
-    puts("IMU HID encoding, report integration, IR/buttons, fallback and cadence: PASS");
+    test_motion_plus();
+    puts("IMU HID encoding, report integration, IR/buttons, fallback, cadence and MotionPlus: PASS");
 }

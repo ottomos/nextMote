@@ -11,6 +11,7 @@
 #include "wiimote_protocol.h"
 #include "wiimote_reports.h"
 #include "wiimote_accel.h"
+#include "wiimote_motion_plus.h"
 
 static const char *TAG = "wiimote_memory";
 
@@ -84,6 +85,9 @@ static uint8_t read_wiimote_memory(uint8_t space, uint8_t slave, uint16_t addres
         return WIIMOTE_MEMORY_ERROR_SUCCESS;
     }
 
+    uint8_t motion_plus_error;
+    if (wiimote_motion_plus_read(slave, address, length, output, &motion_plus_error))
+        return motion_plus_error;
     if (slave != WIIMOTE_I2C_SLAVE_EXTENSION)
         return WIIMOTE_MEMORY_ERROR_NACK;
     if ((address == WIIMOTE_I2C_REG_EXTENSION_ENABLE ||
@@ -158,6 +162,7 @@ void wiimote_memory_reset(void)
     portENTER_CRITICAL(&s_memory_mux);
     s_memory_read.active = false;
     portEXIT_CRITICAL(&s_memory_mux);
+    wiimote_motion_plus_reset();
 }
 
 uint8_t wiimote_memory_handle_read(const uint8_t *payload, uint16_t length)
@@ -208,6 +213,7 @@ uint8_t wiimote_memory_handle_write(const uint8_t *payload, uint16_t length)
     uint16_t address = (uint16_t)((payload[2] << 8) | payload[3]);
     uint8_t count = payload[4];
     uint8_t error = WIIMOTE_MEMORY_ERROR_SUCCESS;
+    bool extension_changed = false;
 
     if (count == 0 || count > 16) {
         error = WIIMOTE_MEMORY_ERROR_INVALID_ADDRESS;
@@ -226,6 +232,9 @@ uint8_t wiimote_memory_handle_write(const uint8_t *payload, uint16_t length)
             memcpy(&s_ir_camera_registers[address], payload + 5, count);
             portEXIT_CRITICAL(&s_ir_camera_mux);
         }
+    } else if (wiimote_motion_plus_write(slave, address, payload + 5, count,
+                                         &error, &extension_changed)) {
+        /* Handled by the emulated MotionPlus. */
     } else if (slave == WIIMOTE_I2C_SLAVE_EXTENSION &&
                address == WIIMOTE_I2C_REG_EXTENSION_ENABLE &&
                count == 1 && payload[5] == 0x55) {
@@ -241,5 +250,7 @@ uint8_t wiimote_memory_handle_write(const uint8_t *payload, uint16_t length)
     ESP_LOGI(TAG, "MEM_WRITE space=0x%02x slave=0x%02x address=0x%04x length=%u error=0x%02x",
              space, slave, address, count, error);
     wiimote_reports_send_memory_write_ack(error);
+    /* A real Wii Remote reports extension attach/detach with a status report. */
+    if (extension_changed) (void)wiimote_reports_send_status();
     return ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS;
 }

@@ -7,6 +7,7 @@
 #include "esp_bt.h"
 #include "esp_bt_device.h"
 #include "esp_bt_main.h"
+#include "esp_coexist.h"
 #include "esp_err.h"
 #include "esp_gap_bt_api.h"
 #include "esp_hidd_api.h"
@@ -355,6 +356,28 @@ static void clear_last_host(void)
         return;
     }
     ESP_LOGI(TAG, "Cleared saved HID host after virtual cable unplug");
+}
+
+/* Marks the HID link as a stream for the Wi-Fi/BT coexistence scheduler, the
+ * way A2DP does, so motion reports are not held back into ~100 ms bursts. */
+static void set_hid_stream_coex(bool streaming)
+{
+#if CONFIG_ESP_COEX_SW_COEXIST_ENABLE
+    esp_err_t err = streaming ?
+        esp_coex_status_bit_set(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING) :
+        esp_coex_status_bit_clear(ESP_COEX_ST_TYPE_BT, ESP_COEX_BT_ST_A2DP_STREAMING);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "coex stream status %d failed: %s", streaming, esp_err_to_name(err));
+    }
+#else
+    (void)streaming;
+#endif
+}
+
+static void close_hid_state(void)
+{
+    wiimote_state_close();
+    set_hid_stream_coex(false);
 }
 
 static void stop_hid_reconnect_timer(void)
@@ -1100,7 +1123,7 @@ static esp_err_t resume_connection_operation(void)
         esp_err_t err = esp_bt_hid_device_get_profile_status(&profile);
         if (err != ESP_OK) return err;
         if (profile.conn_num == 0) {
-            wiimote_state_close();
+            close_hid_state();
             wiimote_web_set_hid_connected(false);
             err = start_sync_pairing_window(false);
             if (err == ESP_OK) connection_operation_set_state(CONNECTION_OP_IDLE);
@@ -1213,7 +1236,7 @@ static void bluetooth_stack_restart_task(void *arg)
         }
     }
 
-    wiimote_state_close();
+    close_hid_state();
     wiimote_web_set_hid_connected(false);
     stop_hid_reconnect_timer();
     close_sync_pairing_window("Bluetooth host restart");
@@ -1835,6 +1858,7 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             stop_hid_reconnect_timer();
             save_last_host(param->open.bd_addr);
             wiimote_state_open();
+            set_hid_stream_coex(true);
             wiimote_controls_on_connection_open();
             wiimote_memory_reset();
             ESP_ERROR_CHECK(wiimote_memory_start());
@@ -1941,7 +1965,7 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
 #endif
             break;
         }
-        wiimote_state_close();
+        close_hid_state();
         wiimote_web_set_hid_connected(false);
         close_sync_pairing_window("HID connection closed");
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
@@ -2044,6 +2068,7 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         break;
     case ESP_HIDD_SEND_REPORT_EVT:
         if (param->send_report.status != ESP_HIDD_SUCCESS) {
+            wiimote_reports_note_send_failure();
             ESP_LOGW(TAG, "HID send id=0x%02x failed status=%d reason=%u",
                      param->send_report.report_id, param->send_report.status,
                      param->send_report.reason);
@@ -2090,7 +2115,7 @@ static void on_hid_event(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             schedule_hid_reconnect("virtual-cable unplug failed");
             break;
         }
-        wiimote_state_close();
+        close_hid_state();
         wiimote_web_set_hid_connected(false);
         stop_hid_reconnect_timer();
         close_sync_pairing_window("virtual cable unplugged");

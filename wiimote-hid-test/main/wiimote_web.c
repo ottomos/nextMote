@@ -19,6 +19,8 @@
 #include "esp_timer.h"
 #include "wiimote_accel.h"
 #include "wiimote_state.h"
+#include "wiimote_motion_plus.h"
+#include "wiimote_reports.h"
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
 #include "esp_bt_main.h"
 #include "esp_gap_bt_api.h"
@@ -298,7 +300,7 @@ static const char INDEX_HTML[] =
     "'Live orientation · 0x'+d.address.toString(16).padStart(2,'0');"
     "document.querySelector('#imu-accel').textContent=d.accel_available?"
     "'HID accel: '+d.accel_raw.join(', ')+' · mode 0x'+d.report_mode.toString(16)+"
-    "' · '+(!d.hid_connected?'no HID host':[0x31,0x33].includes(d.report_mode)?"
+    "' · '+(!d.hid_connected?'no HID host':[0x31,0x33,0x35,0x37].includes(d.report_mode)?"
     "'motion mode requested (receipt unverified)':'host not requesting motion'):"
     "'HID accel: neutral fallback (missing or stale data)';"
     "if(d.available){const roll=d.roll,pitch=d.pitch,yaw=d.yaw;"
@@ -436,13 +438,18 @@ static esp_err_t imu_handler(httpd_req_t *req)
     const long long age_ms = state.accel_samples ?
         (esp_timer_get_time() - state.accel_time_us) / 1000 : -1;
 
-    char response[512];
+    uint32_t hid_data_sent, hid_send_failures;
+    wiimote_reports_get_counters(&hid_data_sent, &hid_send_failures);
+
+    char response[640];
     int length = snprintf(response, sizeof(response),
                           "{\"detected\":%s,\"available\":%s,\"address\":%u,"
                           "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f,"
                           "\"accel_available\":%s,\"accel_samples\":%lu,\"accel_age_ms\":%lld,"
                           "\"accel_ms2\":[%.4f,%.4f,%.4f],\"accel_raw\":[%u,%u,%u],"
-                          "\"recoveries\":%lu,\"report_mode\":%u,\"hid_connected\":%s}",
+                          "\"recoveries\":%lu,\"gyro_samples\":%lu,\"motion_plus_active\":%s,"
+                          "\"hid_data_sent\":%lu,\"hid_send_failures\":%lu,"
+                          "\"report_mode\":%u,\"hid_connected\":%s}",
                           state.detected ? "true" : "false",
                           state.available ? "true" : "false",
                           (unsigned)state.address,
@@ -453,7 +460,10 @@ static esp_err_t imu_handler(httpd_req_t *req)
                           (unsigned long)state.accel_samples, age_ms,
                           (double)state.accel_ms2[0], (double)state.accel_ms2[1],
                           (double)state.accel_ms2[2], raw_x, raw_y, raw_z,
-                          (unsigned long)state.recoveries, remote.report_mode, remote.connected ? "true" : "false");
+                          (unsigned long)state.recoveries, (unsigned long)state.gyro_samples,
+                          wiimote_motion_plus_is_active() ? "true" : "false",
+                          (unsigned long)hid_data_sent, (unsigned long)hid_send_failures,
+                          remote.report_mode, remote.connected ? "true" : "false");
     if (length < 0 || (size_t)length >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "IMU response formatting failed");

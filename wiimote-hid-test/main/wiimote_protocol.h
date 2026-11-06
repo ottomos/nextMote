@@ -9,6 +9,13 @@
 #define WIIMOTE_REPORT_BUTTONS 0x30
 #define WIIMOTE_REPORT_BUTTONS_ACCEL 0x31
 #define WIIMOTE_REPORT_BUTTONS_ACCEL_IR 0x33
+#define WIIMOTE_REPORT_BUTTONS_EXT8 0x32
+#define WIIMOTE_REPORT_BUTTONS_EXT19 0x34
+#define WIIMOTE_REPORT_BUTTONS_ACCEL_EXT16 0x35
+#define WIIMOTE_REPORT_BUTTONS_IR10_EXT9 0x36
+#define WIIMOTE_REPORT_BUTTONS_ACCEL_IR10_EXT6 0x37
+#define WIIMOTE_REPORT_EXT21 0x3d
+#define WIIMOTE_REPORT_MAX_PAYLOAD_LEN 21
 #define WIIMOTE_REPORT_LED 0x11
 #define WIIMOTE_REPORT_STATUS_REQUEST 0x15
 #define WIIMOTE_REPORT_MODE 0x12
@@ -46,4 +53,5 @@
 #define WIIMOTE_IR_CAMERA_FRAME_LENGTH 16
 
 bool wiimote_protocol_is_data_report(uint8_t report_id);
+bool wiimote_protocol_report_has_sensor_data(uint8_t report_id);
 bool wiimote_protocol_report_requests_ack(const uint8_t *payload, uint16_t length);

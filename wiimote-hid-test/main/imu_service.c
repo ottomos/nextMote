@@ -12,12 +12,14 @@
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
 #include "sensor_i2c_bus.h"
+#include "wiimote_motion_plus.h"
 
 #define IMU_I2C_SPEED_HZ 400000
 #define IMU_I2C_TIMEOUT_MS 100
 #define IMU_ACCEL_INTERVAL_US 10000
 /* Orientation only feeds the web page; 50 Hz halves its bus traffic. */
 #define IMU_ROTATION_INTERVAL_US 20000
+#define IMU_GYRO_INTERVAL_US 10000
 #define IMU_SERVICE_PERIOD_MS 5
 /* Bound one bus hold so other I2C users (IR camera) are not starved. */
 #define IMU_MAX_PACKETS_PER_LOCK 8
@@ -90,6 +92,22 @@ static void sensor_callback(bno085_handle_t handle,
         }
         portEXIT_CRITICAL(&s_state_mux);
         if (!valid) ESP_LOGE(TAG, "Invalid non-finite accelerometer sample");
+    } else if (value->sensor_id == BNO085_SENSOR_GYROSCOPE_CALIBRATED) {
+        const float x = value->data.gyroscope_calibrated.x;
+        const float y = value->data.gyroscope_calibrated.y;
+        const float z = value->data.gyroscope_calibrated.z;
+        const bool valid = isfinite(x) && isfinite(y) && isfinite(z);
+        const int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&s_state_mux);
+        s_state.gyro_available = valid;
+        if (valid) {
+            s_state.gyro_rad_s[0] = x;
+            s_state.gyro_rad_s[1] = y;
+            s_state.gyro_rad_s[2] = z;
+            s_state.gyro_time_us = now;
+            ++s_state.gyro_samples;
+        }
+        portEXIT_CRITICAL(&s_state_mux);
     }
 }
 
@@ -101,6 +119,12 @@ static esp_err_t enable_reports(bno085_handle_t handle)
         err = bno085_enable_sensor(handle, BNO085_SENSOR_ACCELEROMETER,
                                    IMU_ACCEL_INTERVAL_US);
     }
+#if NEXTMOTE_ENABLE_MOTION_PLUS
+    if (err == ESP_OK) {
+        err = bno085_enable_sensor(handle, BNO085_SENSOR_GYROSCOPE_CALIBRATED,
+                                   IMU_GYRO_INTERVAL_US);
+    }
+#endif
     return err;
 }
 
@@ -203,7 +227,9 @@ void imu_service_get_state(imu_state_t *state)
     portENTER_CRITICAL(&s_state_mux);
     *state = s_state;
     portEXIT_CRITICAL(&s_state_mux);
-    state->accel_available = imu_service_accel_is_fresh(state, esp_timer_get_time());
+    const int64_t now = esp_timer_get_time();
+    state->accel_available = imu_service_accel_is_fresh(state, now);
+    state->gyro_available = imu_service_gyro_is_fresh(state, now);
 }
 
 esp_err_t imu_service_start(void)

@@ -46,6 +46,22 @@ bool wiimote_accel_encode(uint8_t payload[5], const float sensor_ms2[3])
     return true;
 }
 
+void wiimote_accel_map_gyro(const float sensor_rad_s[3], float wiimote_rad_s[3])
+{
+    const unsigned axes[3] = {
+        WIIMOTE_ACCEL_X_AXIS, WIIMOTE_ACCEL_Y_AXIS, WIIMOTE_ACCEL_Z_AXIS,
+    };
+    const float signs[3] = {
+        WIIMOTE_ACCEL_X_SIGN, WIIMOTE_ACCEL_Y_SIGN, WIIMOTE_ACCEL_Z_SIGN,
+    };
+    /* Angular velocity is a pseudovector: a mirroring mount flips its sign. */
+    const int swaps = (axes[0] > axes[1]) + (axes[0] > axes[2]) + (axes[1] > axes[2]);
+    const float handedness = signs[0] * signs[1] * signs[2] * ((swaps & 1) ? -1.0f : 1.0f);
+    for (unsigned i = 0; i < 3; ++i) {
+        wiimote_rad_s[i] = sensor_rad_s[axes[i]] * signs[i] * handedness;
+    }
+}
+
 void wiimote_accel_encode_neutral(uint8_t payload[5])
 {
     payload[0] &= (uint8_t)~0x60U;

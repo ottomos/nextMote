@@ -40,3 +40,5 @@
 
 bool wiimote_accel_encode(uint8_t payload[5], const float sensor_ms2[3]);
 void wiimote_accel_encode_neutral(uint8_t payload[5]);
+/* Maps sensor angular velocity to Wii Remote axes with the same mounting. */
+void wiimote_accel_map_gyro(const float sensor_rad_s[3], float wiimote_rad_s[3]);

@@ -10,6 +10,7 @@ idf_component_register(SRCS
                     "wiimote_accel.c"
                     "wiimote_commands.c"
                     "wiimote_memory.c"
+                    "wiimote_motion_plus.c"
                     "wiimote_controls.c"
                     "wiimote_protocol.c"
                     "wiimote_descriptor.c"
@@ -23,7 +24,7 @@ idf_component_register(SRCS
                     "ir_camera.c"
                     "ir_camera_service.c"
                     "imu_service.c"
-                    PRIV_REQUIRES bno085 bt esp_http_server esp_netif esp_wifi esp_timer esp_driver_gpio esp_driver_i2c nvs_flash
+                    PRIV_REQUIRES bno085 bt esp_coex esp_http_server esp_netif esp_wifi esp_timer esp_driver_gpio esp_driver_i2c nvs_flash
                     INCLUDE_DIRS ".")
 
 option(WIIMOTE_DIAGNOSTIC_GIAC_ONLY "Hold GIAC during Limited SYNC for a bounded timing probe" OFF)
@@ -39,6 +40,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
                            WIIMOTE_DIAGNOSTIC_GIAC_ONLY=$<BOOL:${WIIMOTE_DIAGNOSTIC_GIAC_ONLY}>
                            WIIMOTE_UPSTREAM_DISCOVERY_BASELINE=$<BOOL:${WIIMOTE_UPSTREAM_DISCOVERY_BASELINE}>
                            WIIMOTE_DIAGNOSTIC_RADIO_ONLY=$<BOOL:${WIIMOTE_DIAGNOSTIC_RADIO_ONLY}>)
+if(DEFINED NEXTMOTE_ENABLE_MOTION_PLUS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+                               NEXTMOTE_ENABLE_MOTION_PLUS=$<BOOL:${NEXTMOTE_ENABLE_MOTION_PLUS}>)
+endif()
 if(DEFINED NEXTMOTE_SEND_IMU_TO_HID)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
                                NEXTMOTE_SEND_IMU_TO_HID=$<BOOL:${NEXTMOTE_SEND_IMU_TO_HID}>)

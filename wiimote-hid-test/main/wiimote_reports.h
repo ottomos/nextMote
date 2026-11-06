@@ -6,6 +6,9 @@
 #include "esp_err.h"
 
 esp_err_t wiimote_reports_start(void);
+/* Data reports accepted by the HID stack, and those it later failed to send. */
+void wiimote_reports_get_counters(uint32_t *data_sent, uint32_t *send_failures);
+void wiimote_reports_note_send_failure(void);
 void wiimote_reports_set_camera_state(const ir_camera_state_t *state);
 uint8_t wiimote_reports_send_input(uint8_t report_id, const uint8_t *data, uint16_t length);
 uint8_t wiimote_reports_send_data(uint8_t report_id);
