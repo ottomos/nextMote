@@ -7,6 +7,7 @@ idf_component_register(SRCS
                     "wiimote_app.c"
                     "wiimote_state.c"
                     "wiimote_reports.c"
+                    "wiimote_accel.c"
                     "wiimote_commands.c"
                     "wiimote_memory.c"
                     "wiimote_controls.c"

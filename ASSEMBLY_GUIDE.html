@@ -410,8 +410,9 @@ GPIO27 (INT, active low) ──────────────────�
         <li><code>BNO08x initialized at 0x4a</code> or <code>0x4b</code> → IMU found and rotation-vector reports enabled.</li>
       </ul>
     </li>
-    <li>With only the BNO connected, <code>/api/imu</code> should report <code>detected:true</code>; after the first rotation-vector event it should report <code>available:true</code> and roll, pitch, and yaw in degrees.</li>
+    <li>With only the BNO connected, <code>/api/imu</code> should report <code>detected:true</code>; after the first rotation-vector event it should report <code>available:true</code> and roll, pitch, and yaw in degrees. On <code>nxt12-imu-integration</code>, also check <code>accel_available:true</code>, an increasing <code>accel_samples</code> count, and fresh <code>accel_age_ms</code>. The user has verified IMU-only web orientation; receiver/game motion remains pending.</li>
     <li>Open the web page at the IP printed in serial to see the live IR plot and the BNO08x orientation panel. The camera may report not detected during an IMU-only test; that does not prevent the IMU panel from working.</li>
+    <li>Standard Wii Remote acceleration is implemented in reports <code>0x31</code>/<code>0x33</code> on the integration branch, not MotionPlus. Adjust mounting axes/signs in <code>wiimote-hid-test/main/wiimote_accel.h</code> before game acceptance; default mapping is direct X/Y/Z. See the <a href="./wiimote-hid-test/README.md#standard-wii-remote-motion-integration">motion test checklist</a>. A web preview or an open HID link is not proof that the console received motion data.</li>
   </ol>
 
   <h3>Troubleshooting quick-reference</h3>

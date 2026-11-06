@@ -52,17 +52,41 @@ This user-reported sequence verifies fresh Pair connections to the DolphinBar an
 
 ### User-reported in-game input check - 6 November 2026
 
-The user reports that, inside a game, nextMote's buttons and IR camera worked. The game title and exact mode were not specified, and no matching serial trace was captured. The user describes the exercised setup as working except for the IMU, which is the remaining planned hardware test and has not been tested yet.
+The user reports that, inside a game, nextMote's buttons and IR camera worked. The game title and exact mode were not specified, and no matching serial trace was captured. Subsequently, on 6 November, the user reported that IMU orientation works very well in the web app in the planned IMU-only setup. This does not yet validate game motion input.
 
 The same page shows a live SEN0158 point plot and raw X/Y values from the native ESP-IDF I2C driver. On `wiimote-ir-pointer`, valid camera point records are passed into HID report `0x33` after the host enables IR. After the mirrored-axis build was flashed, I confirmed pointer and button operation in Wii Sports and Mario Kart. Pointer movement remains twitchy and has not been smoothed. If the camera probe fails at startup, the endpoint reports `detected:false`; see [IR_CAMERA_STATUS.md](../IR_CAMERA_STATUS.md) for the reset/SYNC diagnostic path. Camera/MPU combination is untested. See also [ASSEMBLY_GUIDE.html](../ASSEMBLY_GUIDE.html); for the guide's 5 V wiring, keep the level shifter in the SDA/SCL path.
 
-On `imu-addon`, the BNO08x uses the ESP-IDF `rinku404/bno085` component on the shared GPIO21/22 I2C bus. It probes `0x4B` and `0x4A`, enables the rotation vector at 100 Hz, and exposes roll/pitch/yaw at `/api/imu`; the web page shows an orientation cube as in the legacy camera app. The current component requires BNO INT on GPIO27 and RST on GPIO26. BNO motion is displayed only; real acceleration is not yet sent in wiimote HID reports. Camera-only or IMU-only startup is supported in code; simultaneous sensor hardware remains to be verified.
+The BNO08x uses the ESP-IDF `rinku404/bno085` component on the shared GPIO21/22 I2C bus. It probes `0x4B` and `0x4A`, enables orientation and gravity-inclusive acceleration at a requested 100 Hz, and exposes diagnostics at `/api/imu`. The component requires BNO INT on GPIO27 and RST on GPIO26. The original `imu-addon` implementation displayed orientation only; `nxt12-imu-integration` adds the standard Wii Remote accelerometer report path described below. Camera-only or IMU-only startup is supported in code; simultaneous sensor hardware remains to be verified.
 
 ### IMU-only orientation check
 
 The IMU service shares the GPIO21/22 I2C bus but starts independently of camera detection. For an IMU-only bench test, power off nextMote and connect only the GY-BNO08X: VCC/VIN to 3V3, GND to common ground, SDA/SCL to GPIO21/22, RST to GPIO26, and active-low INT to GPIO27. Leave the camera disconnected. Keep PS0/PS1 in I2C mode and AD0 at its default; firmware probes `0x4B` and `0x4A`.
 
-Build and flash this branch, power up, and open the nextMote page. The camera panel may say “Camera not detected”; the IMU panel should show the detected address and then live roll, pitch, and yaw. `GET /api/imu` returns `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`. Rotate the board by hand to confirm the values change. This tests orientation display only; BNO acceleration is not yet connected to wiimote HID reports.
+Build and flash this branch, power up, and open the nextMote page. The camera panel may say “Camera not detected”; the IMU panel should show the detected address and then live roll, pitch, and yaw. `GET /api/imu` retains `detected`, `available`, `address`, `roll`, `pitch`, and `yaw`, and adds the motion diagnostics below. Rotate the board by hand to confirm the values change. The user has reported successful orientation display; that alone does not establish receiver-side motion acceptance.
+
+### Standard Wii Remote motion integration
+
+**Latest bench status (6 November):** the integration image was flashed with all image hashes verified and NVS retained. Live API checks initially confirmed fresh acceleration and a connected DolphinBar, but the user later reported unavailable controller status and button `Failed to fetch` errors while Dolphin still showed a connected remote, including after resets. HTTP at the last known address also timed out during investigation. The IMU was removed for the baseline check. Cause is not established; motion/game acceptance is not verified. The integration work is being preserved on this branch while `main` is tested separately.
+
+On `nxt12-imu-integration`, the BNO's calibrated **accelerometer including gravity** supplies tilt and shake data. Rotation-vector angles and gravity-removed linear acceleration are not substitutes for these measurements. This implements the base Wii Remote accelerometer, not MotionPlus gyroscope/extension emulation.
+
+- [`main/wiimote_accel.h`](./main/wiimote_accel.h) contains the six mounting settings: `WIIMOTE_ACCEL_{X,Y,Z}_AXIS` select sensor axes (`0=X`, `1=Y`, `2=Z`), and `WIIMOTE_ACCEL_{X,Y,Z}_SIGN` select `+1` or `-1`. Defaults are direct X/Y/Z, pending PCB mounting checks. Rebuild after changing them; the web orientation cube remains in the sensor's original frame.
+- Encoding matches the existing duplicated EEPROM calibration: zero-g is `0x80`, +1g is `0x9a` in the high-byte scale, or 512 and 616 in the 10-bit scale. Values are rounded and saturated to 0..1023. X's two low bits and Y/Z's bit 1 are packed into the unused button bits without changing real button bits. Y/Z bit 0 is not transmitted by the normal Wii Remote protocol.
+- Host-selected reports `0x31` (5-byte payload) and `0x33` (17-byte payload) use live acceleration. A shared reporting task polls at 20 ms (50 Hz target); continuous mode sends each tick, otherwise only encoded changes are sent. Camera updates are cached for this same task instead of creating a second report stream. Button and command responses may additionally send immediately.
+- Samples older than 250 ms, invalid samples, or an absent IMU use the previous neutral posture: zero X/Y, +1g Z. Source loss/recovery is logged. Camera absence produces empty IR points and does not prevent accelerometer reports. Mode `0x30` remains button-only and event-driven.
+- `/api/imu` adds `accel_available`, `accel_samples`, `accel_age_ms` (`-1` before the first sample), `accel_ms2` (sensor frame), `accel_raw` (mapped/quantized HID candidate), `report_mode`, and `hid_connected`. The page distinguishes a motion mode requested by a host from a host that only requested buttons. Neither these diagnostics nor a successful local send proves receiver acceptance.
+
+**Software validation:** from the firmware repository, run `sh test/run_imu_hid_test.sh`. It compiles the production encoder/report code against minimal host SDK shims, checking all 1024 raw levels, six-face gravity/scaling, swapped/inverted mounting, saturation/non-finite input, the exact 250 ms freshness boundary, buttons/status/ACK preservation, camera-present/absent report `0x33`, continuous/change-only cadence, disconnected suppression, and send-error retries. The existing Python regression suite remains `python -m unittest discover -s test -v`.
+
+**Build:** the workspace task **nextMote: Build ESP32** uses the managed ESP-IDF 6.0.1 environment and writes the new image to the workspace's `build/imu-integration/nextMote.bin`, outside this firmware repository. This avoids the old build directory's incompatible Python environment. The dedicated **nextMote: Flash IMU integration** task targets this image; the original Flash task still targets the old default build directory. These workspace tasks build the currently checked-out source, so verify the branch before using them.
+
+**Hardware acceptance still pending:**
+
+1. Flash the integration image with explicit permission, retaining NVS/bonds. With only the IMU attached, confirm `accel_available:true`, increasing `accel_samples`, and a fresh sample age.
+2. With the default mapping, hold the board in six orientations: when one sensor axis points upward, expect approximately 616 on that HID axis and 512 on the other two; pointing that axis downward should give approximately 408. Verify the axis signs against the intended controller mounting. Do not drop the board to test zero-g.
+3. Pair/reconnect to DolphinBar mode 4 and capture its USB HID slot while Dolphin is closed. Select a motion report using the existing host tooling and verify received `0x31` or `0x33` bytes follow the board motion, including low bits and button preservation. The bar's default button-only `0x30` mode cannot validate accelerometer delivery.
+4. Close the capture before opening Dolphin with a **Real Wii Remote** connection. Test tilt/steering or shake in a base-Wii-Remote game without relying on pointer/IR. Repeat a motion-dependent action independently on Wii/Wii U vWii. Record the game, mode, mapping, and result; this is not support for MotionPlus-required games.
+5. Test camera+IMU together separately, then repeat reconnect/power-cycle and sustained motion checks. Host tests and a build do not establish these hardware results.
 
 ### Wii Sports trace: requests, previous replies, and current behavior
 
@@ -202,13 +226,14 @@ The IMU branch obtains BNO08x support from `rinku404/bno085` v1.2.0 through ESP-
 - `main/wiimote_app.c` contains Classic Bluetooth setup, pairing, GAP/HID event callbacks, and app startup.
 - `main/wiimote_state.c` owns synchronized connection, button, LED, IR, and report-mode state.
 - `main/wiimote_protocol.c` defines supported report IDs and common protocol checks.
-- `main/wiimote_reports.c` encodes and sends input, status, acknowledgement, and memory replies.
+- `main/wiimote_reports.c` encodes and sends input, status, acknowledgement, and memory replies, and owns the paced sensor-report task.
+- `main/wiimote_accel.c` maps mounting axes and encodes calibrated acceleration including the packed button-byte low bits.
 - `main/wiimote_commands.c` dispatches host output reports to their capability handlers.
 - `main/wiimote_memory.c` emulates EEPROM/I2C reads and writes for initialization.
 - `main/wiimote_controls.c` handles web button input and the optional fake-button demo.
 - `main/ir_camera_service.c` initializes and polls the SEN0158 camera for the web preview.
 - `main/sensor_i2c_bus.c` creates and serializes access to the shared camera/IMU I2C bus.
-- `main/imu_service.c` initializes the BNO08x and publishes rotation-vector orientation.
+- `main/imu_service.c` initializes the BNO08x and publishes rotation-vector orientation and timestamped gravity-inclusive acceleration.
 - `main/wiimote_descriptor.c` contains the HID report descriptor.
 - `main/wiimote_identity.c` contains Bluetooth address formatting.
 - `main/wiimote_app.c` publishes a primary SDP Device ID record with Nintendo VID/PID `057e:0306`, starts hidden, and opens a 30-second Limited window from web SYNC. `main/wiimote_discovery.c` respects nextMote's IAC capacity and rearms inquiry while alternating codes. The legacy PIN uses the reversed host address without inferring pairing mode from `min_16_digit`. Standard five-cycle GIAC/LIAC inquiry passed 5/5 with CoD `0x002504`; a Wii U/vWii connection, Plus/Minus input, and pointer visibility have since been observed. Full wiimote feature/game parity and reconnect stability remain unverified. Temporary 1+2 guest pairing is unsupported.

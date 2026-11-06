@@ -16,6 +16,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "imu_service.h"
+#include "esp_timer.h"
+#include "wiimote_accel.h"
+#include "wiimote_state.h"
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
 #include "esp_bt_main.h"
 #include "esp_gap_bt_api.h"
@@ -159,6 +162,7 @@ static const char INDEX_HTML[] =
     "<div>Roll: <span id='imu-roll'>-</span>°</div>"
     "<div>Pitch: <span id='imu-pitch'>-</span>°</div>"
     "<div>Yaw: <span id='imu-yaw'>-</span>°</div>"
+    "<div id='imu-accel'>Waiting for accelerometer data</div>"
     "</div><div class='imu-cube-wrap'><div id='imu-cube' aria-label='IMU orientation box'></div>"
     "</div></div></section></main><script>"
     "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
@@ -289,6 +293,11 @@ static const char INDEX_HTML[] =
     "imuStatusEl.textContent=!d.detected?'BNO08x not detected · check wiring':"
     "!d.available?'BNO08x found at 0x'+d.address.toString(16).padStart(2,'0')+' · waiting for orientation':"
     "'Live orientation · 0x'+d.address.toString(16).padStart(2,'0');"
+    "document.querySelector('#imu-accel').textContent=d.accel_available?"
+    "'HID accel: '+d.accel_raw.join(', ')+' · mode 0x'+d.report_mode.toString(16)+"
+    "' · '+(!d.hid_connected?'no HID host':[0x31,0x33].includes(d.report_mode)?"
+    "'motion mode requested (receipt unverified)':'host not requesting motion'):"
+    "'HID accel: neutral fallback (missing or stale data)';"
     "if(d.available){const roll=d.roll,pitch=d.pitch,yaw=d.yaw;"
     "document.querySelector('#imu-roll').textContent=roll.toFixed(1);"
     "document.querySelector('#imu-pitch').textContent=pitch.toFixed(1);"
@@ -406,16 +415,36 @@ static esp_err_t imu_handler(httpd_req_t *req)
     imu_state_t state;
     imu_service_get_state(&state);
 
-    char response[192];
+    wiimote_state_snapshot_t remote;
+    wiimote_state_get_snapshot(&remote);
+    uint8_t accel[5] = {0};
+    if (!state.accel_available || !wiimote_accel_encode(accel, state.accel_ms2)) {
+        wiimote_accel_encode_neutral(accel);
+    }
+    const unsigned raw_x = (accel[2] << 2) | ((accel[0] >> 5) & 3U);
+    const unsigned raw_y = (accel[3] << 2) | ((accel[1] >> 4) & 2U);
+    const unsigned raw_z = (accel[4] << 2) | ((accel[1] >> 5) & 2U);
+    const long long age_ms = state.accel_samples ?
+        (esp_timer_get_time() - state.accel_time_us) / 1000 : -1;
+
+    char response[512];
     int length = snprintf(response, sizeof(response),
                           "{\"detected\":%s,\"available\":%s,\"address\":%u,"
-                          "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f}",
+                          "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f,"
+                          "\"accel_available\":%s,\"accel_samples\":%lu,\"accel_age_ms\":%lld,"
+                          "\"accel_ms2\":[%.4f,%.4f,%.4f],\"accel_raw\":[%u,%u,%u],"
+                          "\"report_mode\":%u,\"hid_connected\":%s}",
                           state.detected ? "true" : "false",
                           state.available ? "true" : "false",
                           (unsigned)state.address,
                           (double)state.roll_deg,
                           (double)state.pitch_deg,
-                          (double)state.yaw_deg);
+                          (double)state.yaw_deg,
+                          state.accel_available ? "true" : "false",
+                          (unsigned long)state.accel_samples, age_ms,
+                          (double)state.accel_ms2[0], (double)state.accel_ms2[1],
+                          (double)state.accel_ms2[2], raw_x, raw_y, raw_z,
+                          remote.report_mode, remote.connected ? "true" : "false");
     if (length < 0 || (size_t)length >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "IMU response formatting failed");

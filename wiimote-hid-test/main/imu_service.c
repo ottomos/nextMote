@@ -7,6 +7,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
@@ -63,9 +64,27 @@ static void sensor_callback(bno085_handle_t handle,
 {
     (void)handle;
     (void)user_context;
-    if (value == NULL || value->sensor_id != BNO085_SENSOR_ROTATION_VECTOR) return;
-
-    publish_rotation_vector(value);
+    if (value == NULL) return;
+    if (value->sensor_id == BNO085_SENSOR_ROTATION_VECTOR) {
+        publish_rotation_vector(value);
+    } else if (value->sensor_id == BNO085_SENSOR_ACCELEROMETER) {
+        const float x = value->data.accelerometer.x;
+        const float y = value->data.accelerometer.y;
+        const float z = value->data.accelerometer.z;
+        const bool valid = isfinite(x) && isfinite(y) && isfinite(z);
+        const int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&s_state_mux);
+        s_state.accel_available = valid;
+        if (valid) {
+            s_state.accel_ms2[0] = x;
+            s_state.accel_ms2[1] = y;
+            s_state.accel_ms2[2] = z;
+            s_state.accel_time_us = now;
+            ++s_state.accel_samples;
+        }
+        portEXIT_CRITICAL(&s_state_mux);
+        if (!valid) ESP_LOGE(TAG, "Invalid non-finite accelerometer sample");
+    }
 }
 
 static void imu_service_task(void *arg)
@@ -90,6 +109,7 @@ void imu_service_get_state(imu_state_t *state)
     portENTER_CRITICAL(&s_state_mux);
     *state = s_state;
     portEXIT_CRITICAL(&s_state_mux);
+    state->accel_available = imu_service_accel_is_fresh(state, esp_timer_get_time());
 }
 
 esp_err_t imu_service_start(void)
@@ -154,8 +174,12 @@ esp_err_t imu_service_start(void)
             err = bno085_enable_sensor(handle, BNO085_SENSOR_ROTATION_VECTOR,
                                        IMU_REPORT_INTERVAL_US);
         }
+        if (err == ESP_OK) {
+            err = bno085_enable_sensor(handle, BNO085_SENSOR_ACCELEROMETER,
+                                       IMU_REPORT_INTERVAL_US);
+        }
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to enable BNO08x rotation vector: %s",
+            ESP_LOGE(TAG, "Failed to enable BNO08x orientation/accelerometer: %s",
                      esp_err_to_name(err));
             bno085_deinit(handle);
             handle = NULL;
@@ -208,7 +232,7 @@ esp_err_t imu_service_start(void)
 
     s_started = true;
     sensor_i2c_bus_unlock();
-    ESP_LOGI(TAG, "BNO08x initialized at 0x%02x; rotation vector enabled at 100 Hz",
+    ESP_LOGI(TAG, "BNO08x initialized at 0x%02x; rotation vector and gravity-inclusive acceleration enabled at 100 Hz",
              detected_address);
     return ESP_OK;
 }

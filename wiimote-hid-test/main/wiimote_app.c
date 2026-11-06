@@ -2190,9 +2190,10 @@ void app_main(void)
     wiimote_web_start();
 #endif
 #endif
+    ESP_ERROR_CHECK(wiimote_reports_start());
     esp_err_t imu_err = imu_service_start();
     if (imu_err != ESP_OK) {
-        ESP_LOGW(TAG, "BNO08x orientation service unavailable: %s",
+        ESP_LOGW(TAG, "BNO08x orientation/acceleration service unavailable: %s",
                  esp_err_to_name(imu_err));
     }
     ESP_ERROR_CHECK(wiimote_controls_start_fake_demo());

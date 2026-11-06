@@ -10,13 +10,15 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "freertos/task.h"
+#include "imu_service.h"
+#include "wiimote_accel.h"
 #include "wiimote_protocol.h"
 #include "wiimote_state.h"
 
 static const char *TAG = "wiimote_reports";
 /* Temporary midpoint of the 0x00-0xff scale until battery voltage is measured. */
 #define WIIMOTE_SYNTHETIC_BATTERY_HALF 0x80U
-static const uint8_t s_neutral_accelerometer[3] = {0x80, 0x80, 0x9a};
 static ir_camera_state_t s_camera_state;
 static portMUX_TYPE s_camera_state_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -45,20 +47,8 @@ void wiimote_reports_set_camera_state(const ir_camera_state_t *state)
     if (state == NULL) return;
 
     portENTER_CRITICAL(&s_camera_state_mux);
-    bool changed = s_camera_state.detected != state->detected ||
-                   s_camera_state.available != state->available ||
-                   memcmp(s_camera_state.ir_report_data, state->ir_report_data,
-                          sizeof(s_camera_state.ir_report_data)) != 0;
     s_camera_state = *state;
     portEXIT_CRITICAL(&s_camera_state_mux);
-
-    wiimote_state_snapshot_t remote;
-    wiimote_state_get_snapshot(&remote);
-    if (remote.connected && remote.report_mode == WIIMOTE_REPORT_BUTTONS_ACCEL_IR &&
-        remote.ir_logic_enabled && remote.ir_sensor_enabled &&
-        (remote.continuous_reporting || changed)) {
-        (void)wiimote_reports_send_current();
-    }
 }
 
 uint8_t wiimote_reports_send_input(uint8_t report_id, const uint8_t *data, uint16_t length)
@@ -67,7 +57,8 @@ uint8_t wiimote_reports_send_input(uint8_t report_id, const uint8_t *data, uint1
 
     esp_err_t err = esp_bt_hid_device_send_report(
         ESP_HIDD_REPORT_TYPE_INTRDATA, report_id, length, (uint8_t *)data);
-    if (report_id == WIIMOTE_REPORT_BUTTONS_ACCEL_IR) {
+    if (report_id == WIIMOTE_REPORT_BUTTONS_ACCEL_IR ||
+        report_id == WIIMOTE_REPORT_BUTTONS_ACCEL) {
         ESP_LOGD(TAG, "tx id=0x%02x length=%u status=%s",
                  report_id, length, esp_err_to_name(err));
     } else {
@@ -78,10 +69,17 @@ uint8_t wiimote_reports_send_input(uint8_t report_id, const uint8_t *data, uint1
                            ESP_HID_PAR_HANDSHAKE_RSP_NOT_READY;
 }
 
-uint8_t wiimote_reports_send_data(uint8_t report_id)
+static uint16_t build_data_payload(uint8_t report_id, uint8_t *payload)
 {
-    uint8_t payload[WIIMOTE_REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN] = {0};
     wiimote_state_get_buttons(payload);
+    if (report_id == WIIMOTE_REPORT_BUTTONS_ACCEL ||
+        report_id == WIIMOTE_REPORT_BUTTONS_ACCEL_IR) {
+        imu_state_t imu;
+        imu_service_get_state(&imu);
+        if (!imu.accel_available || !wiimote_accel_encode(payload, imu.accel_ms2)) {
+            wiimote_accel_encode_neutral(payload);
+        }
+    }
 
     uint16_t length;
     switch (report_id) {
@@ -89,13 +87,9 @@ uint8_t wiimote_reports_send_data(uint8_t report_id)
         length = WIIMOTE_REPORT_BUTTONS_PAYLOAD_LEN;
         break;
     case WIIMOTE_REPORT_BUTTONS_ACCEL:
-        memcpy(payload + WIIMOTE_BUTTON_PAYLOAD_LEN, s_neutral_accelerometer,
-               sizeof(s_neutral_accelerometer));
         length = WIIMOTE_REPORT_BUTTONS_ACCEL_PAYLOAD_LEN;
         break;
     case WIIMOTE_REPORT_BUTTONS_ACCEL_IR:
-        memcpy(payload + WIIMOTE_BUTTON_PAYLOAD_LEN, s_neutral_accelerometer,
-               sizeof(s_neutral_accelerometer));
         {
             wiimote_state_snapshot_t remote;
             ir_camera_state_t camera;
@@ -116,11 +110,79 @@ uint8_t wiimote_reports_send_data(uint8_t report_id)
         length = WIIMOTE_REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN;
         break;
     default:
+        return 0;
+    }
+    return length;
+}
+
+uint8_t wiimote_reports_send_data(uint8_t report_id)
+{
+    uint8_t payload[WIIMOTE_REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN] = {0};
+    uint16_t length = build_data_payload(report_id, payload);
+    if (length == 0) {
         ESP_LOGW(TAG, "Unsupported input report mode 0x%02x", report_id);
         return ESP_HID_PAR_HANDSHAKE_RSP_ERR_UNSUPPORTED_REQ;
     }
-
     return wiimote_reports_send_input(report_id, payload, length);
+}
+
+static void sensor_report_task(void *arg)
+{
+    (void)arg;
+    uint8_t previous[WIIMOTE_REPORT_BUTTONS_ACCEL_IR_PAYLOAD_LEN] = {0};
+    uint8_t previous_mode = 0;
+    bool accel_was_live = false;
+    bool send_failed = false;
+    TickType_t last_wake = xTaskGetTickCount();
+
+    for (;;) {
+        imu_state_t imu;
+        imu_service_get_state(&imu);
+        if (imu.accel_available != accel_was_live) {
+            if (imu.accel_available) {
+                ESP_LOGI(TAG, "HID accelerometer source: live BNO08x");
+            } else {
+                ESP_LOGW(TAG, "HID accelerometer source: neutral fallback (missing, invalid, or stale data)");
+            }
+            accel_was_live = imu.accel_available;
+        }
+
+        wiimote_state_snapshot_t remote;
+        wiimote_state_get_snapshot(&remote);
+        if (remote.connected &&
+            (remote.report_mode == WIIMOTE_REPORT_BUTTONS_ACCEL ||
+             remote.report_mode == WIIMOTE_REPORT_BUTTONS_ACCEL_IR)) {
+            uint8_t payload[sizeof(previous)] = {0};
+            uint16_t length = build_data_payload(remote.report_mode, payload);
+            if (remote.continuous_reporting || previous_mode != remote.report_mode ||
+                memcmp(previous, payload, length) != 0) {
+                uint8_t result = wiimote_reports_send_input(remote.report_mode, payload, length);
+                if (result == ESP_HID_PAR_HANDSHAKE_RSP_SUCCESS) {
+                    memcpy(previous, payload, length);
+                    previous_mode = remote.report_mode;
+                    if (send_failed) ESP_LOGI(TAG, "Sensor HID report sends recovered");
+                    send_failed = false;
+                } else if (!send_failed) {
+                    ESP_LOGW(TAG, "Sensor HID report send failed; retrying on next tick");
+                    send_failed = true;
+                }
+            }
+        } else {
+            previous_mode = 0;
+        }
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(20));
+    }
+}
+
+esp_err_t wiimote_reports_start(void)
+{
+    BaseType_t result = xTaskCreate(sensor_report_task, "sensor_reports", 3072,
+                                    NULL, 5, NULL);
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create sensor HID reporting task");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
 }
 
 uint8_t wiimote_reports_send_current(void)
