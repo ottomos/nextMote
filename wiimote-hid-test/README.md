@@ -119,17 +119,38 @@ Games requiring unimplemented extensions or unvalidated MotionPlus behavior may 
 
 On a factory-fresh board (no network stored in NVS) nextMote starts in **Wi-Fi setup mode**. In this mode only the setup network and page run: Bluetooth, the IMU and the camera are **not** started.
 
-1. Join the open Wi-Fi network `nextMote-Setup-XXXX` (last four hex digits of the SoftAP MAC). Phones usually open the page automatically (captive DNS + redirect); otherwise open `http://192.168.4.1/`.
-2. Pick your network from the scan list (only **2.4 GHz** networks work), enter the password and press connect. The device tests the connection; on success it stores the network in NVS and restarts into normal mode after 10 s. Errors (wrong password, network not found) are shown on the page.
-3. In normal mode the device joins the stored network and serves the normal web app at the IP printed on the serial console (also shown in `/api/status` together with the stored `ssid`).
+1. Power the flashed board. Join the open Wi-Fi network `nextMote-Setup-XXXX` (last four hex digits of the SoftAP MAC). Stay connected if your phone warns that this network has no internet. The captive DNS and redirect may open the page automatically; otherwise open `http://192.168.4.1/`.
+2. Pick your network from the scan list, enter the password and press connect. **ESP32-WROOM supports only 2.4 GHz.** A shared 2.4/5 GHz network name is fine: the ESP joins its 2.4 GHz radio, not its 5 GHz radio.
+3. Wait for the connection result. Errors (wrong password, network not found) are shown on the page; correct the details and retry. On success the device stores the network in NVS, displays its assigned IP and restarts into normal mode after 10 s.
+4. Reconnect your phone/computer to the home network and open `http://<assigned-IP>/`. The setup AP goes away; Bluetooth and sensors start in normal mode. The setup page does not automatically move your phone onto the home network.
+
+### Subsequent boots and finding the web app
+
+With a network saved, each boot connects directly to it; no setup AP is started. The router assigns the normal-mode IP using DHCP, so **it can change after a restart**. Do not treat an address from an earlier test as permanent. The setup-mode address remains `192.168.4.1`.
+
+Read the startup line `wiimote_web: Wi-Fi connected; IP=...` in the serial monitor. From the project directory, use `idf.py -B build/mplus -p /dev/ttyUSB0 monitor` for the tested M+ build (replace the build directory/port as needed; ESP-IDF must be activated). Exit with `Ctrl+]`. Opening the monitor may reset the board and interrupt Bluetooth. `/api/status` also returns `ip` and `ssid` once you already know the address. The serial `status` command shows mode and stored network name, not the IP.
+
+For a stable address, configure a DHCP reservation in your router. A `nextmote.local` hostname is not implemented.
+
+### Re-entering setup and factory Wi-Fi reset
 
 Triggers for testing (the stored network is kept unless you use `forget`):
 
 - Web app: **Wi-Fi setup** button (`POST /api/wifi/setup`).
-- Serial console (115200 baud, type a command and press Enter): `status`, `setup` (reboot into setup mode once), `normal` (leave setup mode), `forget` (erase the stored network = factory Wi-Fi state), `reboot`.
+- Serial console (115200 baud, type a command and press Enter): `status`, `setup` (reboot into setup mode once), `normal` (leave setup mode when a network is saved), `forget` (erase the stored network = factory Wi-Fi state), `reboot`.
 - The setup request is one-shot: resetting the board while in setup mode returns to normal mode when a network is stored.
 
-There is no automatic fallback to setup mode when the stored network is unreachable. Setup-mode API: `GET /api/scan`, `POST /api/wifi` (form fields `ssid`, `password`), `GET /api/wifi/state`, `POST /api/setup/exit`.
+`forget` clears only the Wi-Fi configuration namespace, not Bluetooth bonds or the saved Bluetooth host. Ordinary reflashing does not clear these settings. Full flash/NVS erasure is different and can remove pairing data too.
+
+There is no automatic fallback to setup mode when the stored network is unreachable: Bluetooth operation remains available, but the normal web page may not be reachable. Use serial `setup` to choose a new network. No physical setup-button trigger is implemented.
+
+The setup AP is open and the setup page uses HTTP, not HTTPS. Configure the device in a trusted environment; do not publish passwords in screenshots, logs or repository files.
+
+### Initialization validation (7 November 2026)
+
+The user reports provisioning **"works really well"**. Instrumented laptop tests separately verified factory boot, page loading, captive redirect/DNS, scanning, wrong-password failure followed by successful retry, credential persistence, return to the normal web app and DolphinBar reconnection. Serial `setup`, `normal`, `forget`, web-triggered setup and one-shot reset behavior also passed. The user's exact browser/device and whether its automatic captive-portal popup opened were not specified. Different-channel routers and open home networks remain untested.
+
+Setup-mode API: `GET /api/scan`, `POST /api/wifi` (form fields `ssid`, `password`), `GET /api/wifi/state`, `POST /api/setup/exit`.
 
 ## Build and flash
 

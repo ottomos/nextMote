@@ -87,6 +87,16 @@ The slot probe and watcher are read-only with respect to pairing. Do not run the
 
 ## Current scope and limitations
 
+### Device initialization and Wi-Fi
+
+On first boot with no saved Wi-Fi network, join `nextMote-Setup-XXXX` and open `http://192.168.4.1/` (stay connected despite the no-internet warning). Choose a **2.4 GHz** network and enter its password. Shared dual-band SSIDs work through their 2.4 GHz radio. Successful setup saves the network in NVS, shows the assigned IP and restarts after 10 seconds. Rejoin your home Wi-Fi and open that IP to use the controller.
+
+**Setup mode runs only Wi-Fi provisioning: Bluetooth and sensors are off.** Later boots connect directly to the saved network. Normal-mode IP addresses are assigned by DHCP and may change; read `Wi-Fi connected; IP=...` in the serial boot log. `192.168.4.1` is only the setup-mode address.
+
+Use the web **Wi-Fi setup** button or serial `setup` to reconfigure without deleting the old network. Serial `forget` resets only Wi-Fi settings, not Bluetooth pairing; `normal` or another reset exits a one-shot setup session when a network is saved. An unreachable saved network does not automatically start setup mode; use serial recovery instead.
+
+**Validation (7 November 2026):** the user reports provisioning works really well. Instrumented laptop tests covered factory setup, errors/retry, saved-network boot and setup/reset triggers. The exact user browser and automatic captive-popup behavior were not specified. See the [complete initialization and recovery instructions](./wiimote-hid-test/README.md#wi-fi-setup-mode) and [power-on guide](./ASSEMBLY_GUIDE.html#initial-wifi-setup).
+
 - **Verified through the DolphinBar:** Classic Bluetooth pairing/authentication, HID open, host report-mode and LED commands, status request/reply, and web-generated core-button reports at the bar's USB HID slot. The captured Mario Kart Wii startup trace produced the expected error-8 reply for EEPROM probe `0x1770`, then handled report `0x1A`.
 - **My game results:** earlier builds accepted web-generated A input in Mario Kart Wii and allowed entry into Mario Kart Wii and Wii Sports. On 6 November, the user additionally reported basic motion working in Mario Kart Wii with the default MotionPlus-off build. These results apply to Dolphin + DolphinBar mode 4 + nextMote only. Optional MotionPlus is implemented; Wii Sports Resort Swordplay was user-reported as an almost perfect game in Dolphin (DolphinBar, M+ build, camera + IMU). Full gameplay, all controls, other games, real Wii hardware, and full Wii U compatibility remain unverified. Mario Kart Wii does not require a Nunchuk; the earlier Nunchuk inference was incorrect.
 - The captured startup trace reads EEPROM `0x1770`; Dolphin's reference implementation rejects it with invalid-address error 8. nextMote replied `00 00 F8 17 70 00 ...`; the same trace showed output feature report `0x1A`, which nextMote now accepts and success-ACKs. No calibration read at `0x0016` appeared in that capture.
