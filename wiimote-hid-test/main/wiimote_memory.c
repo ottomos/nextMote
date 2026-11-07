@@ -12,6 +12,7 @@
 #include "wiimote_reports.h"
 #include "wiimote_accel.h"
 #include "wiimote_motion_plus.h"
+#include "wiimote_nunchuk.h"
 
 static const char *TAG = "wiimote_memory";
 
@@ -88,6 +89,9 @@ static uint8_t read_wiimote_memory(uint8_t space, uint8_t slave, uint16_t addres
     uint8_t motion_plus_error;
     if (wiimote_motion_plus_read(slave, address, length, output, &motion_plus_error))
         return motion_plus_error;
+    uint8_t nunchuk_error;
+    if (wiimote_nunchuk_read(slave, address, length, output, &nunchuk_error))
+        return nunchuk_error;
     if (slave != WIIMOTE_I2C_SLAVE_EXTENSION)
         return WIIMOTE_MEMORY_ERROR_NACK;
     if ((address == WIIMOTE_I2C_REG_EXTENSION_ENABLE ||
@@ -163,6 +167,7 @@ void wiimote_memory_reset(void)
     s_memory_read.active = false;
     portEXIT_CRITICAL(&s_memory_mux);
     wiimote_motion_plus_reset();
+    wiimote_nunchuk_reset();
 }
 
 uint8_t wiimote_memory_handle_read(const uint8_t *payload, uint16_t length)
@@ -235,6 +240,8 @@ uint8_t wiimote_memory_handle_write(const uint8_t *payload, uint16_t length)
     } else if (wiimote_motion_plus_write(slave, address, payload + 5, count,
                                          &error, &extension_changed)) {
         /* Handled by the emulated MotionPlus. */
+    } else if (wiimote_nunchuk_write(slave, address, payload + 5, count, &error)) {
+        /* Handled by the emulated Nunchuk. */
     } else if (slave == WIIMOTE_I2C_SLAVE_EXTENSION &&
                address == WIIMOTE_I2C_REG_EXTENSION_ENABLE &&
                count == 1 && payload[5] == 0x55) {

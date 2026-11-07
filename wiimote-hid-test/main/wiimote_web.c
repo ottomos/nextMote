@@ -21,6 +21,7 @@
 #include "wiimote_accel.h"
 #include "wiimote_state.h"
 #include "wiimote_motion_plus.h"
+#include "wiimote_nunchuk.h"
 #include "wiimote_reports.h"
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
 #include "esp_bt_main.h"
@@ -130,6 +131,16 @@ static const char INDEX_HTML[] =
     "#imu-cube{width:72px;height:72px;border:2px solid #172033;"
     "background:linear-gradient(145deg,#f29900,#f8c96b);transform-style:preserve-3d;"
     "transition:transform 90ms linear}"
+".nunchuk-panel{margin:18px auto;padding:18px;background:#161e2d;border:1px solid #35415a;"
+    "border-radius:22px;text-align:center}.nunchuk-panel h2{margin:0}"
+    "#nc-status{color:#8fa0bf;margin:8px 0;min-height:1.5em}"
+    "#nc-toggle{min-height:52px;padding:0 22px;background:#66728a}#nc-toggle.on{background:#13a89e}"
+    ".nc-layout{display:flex;gap:28px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:14px}"
+    "#nc-pad{width:170px;height:170px;border-radius:50%;background:#263650;position:relative;"
+    "touch-action:none;border:2px solid #46516a}#nc-knob{width:54px;height:54px;border-radius:50%;"
+    "background:#d4d8e2;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none}"
+    ".nc-buttons{display:flex;flex-direction:column;gap:14px}.nc-buttons button{width:72px;height:56px}"
+    ".nunchuk-panel.off .nc-layout{opacity:.45}"
     "</style></head><body><main class='wrap'><h1>nextMote</h1>"
     "<div id='status'>Loading controller status…</div><div id='button-status' aria-live='polite'></div>"
     "<section class='pairing-panel' aria-label='Bluetooth host actions'>"
@@ -151,7 +162,14 @@ static const char INDEX_HTML[] =
     "<button class='sys' style='grid-column:3;grid-row:1' data-button='Plus'>+</button>"
     "<div class='combo-row'><button class='combo' data-button='AB'>A + B</button>"
     "<button class='combo' data-button='ONE_TWO'>1 + 2</button></div>"
-    "</section><section class='camera-panel' aria-label='IR camera view'>"
+    "</section>"
+    "<section class='nunchuk-panel off' id='nc-panel' aria-label='Web Nunchuk'>"
+    "<h2>Nunchuk · web</h2><p id='nc-status'>Loading Nunchuk state…</p>"
+    "<button id='nc-toggle' type='button'>Connect Nunchuk</button>"
+    "<div class='nc-layout'><div id='nc-pad' role='slider' aria-label='Nunchuk stick'>"
+    "<div id='nc-knob'></div></div><div class='nc-buttons'>"
+    "<button data-nc='c'>C</button><button data-nc='z'>Z</button></div></div></section>"
+    "<section class='camera-panel' aria-label='IR camera view'>"
     "<h2>IR camera · SEN0158</h2><p id='camera-status'>Waiting for camera data…</p>"
     "<div id='camera-tracker' role='img' aria-label='Live IR point plot'></div>"
     "<table class='camera-values'><thead><tr><th>Point</th><th>X</th><th>Y</th></tr></thead>"
@@ -320,6 +338,41 @@ static const char INDEX_HTML[] =
     "if(!document.hidden)await updateCamera()}"
     "finally{sensorPollPending=false}}"
     "pollSensors();setInterval(pollSensors,200);"
+    "const ncPanel=document.querySelector('#nc-panel'),ncStatus=document.querySelector('#nc-status');"
+    "const ncToggle=document.querySelector('#nc-toggle'),ncPad=document.querySelector('#nc-pad');"
+    "const ncKnob=document.querySelector('#nc-knob');let ncAttached=false,ncDirty=false,ncBusy=false;"
+    "const nc={sx:128,sy:128,c:0,z:0};"
+    "function ncShow(d){ncAttached=d.attached;ncPanel.classList.toggle('off',!d.attached);"
+    "ncToggle.classList.toggle('on',d.attached);ncToggle.textContent=d.attached?'Disconnect Nunchuk':'Connect Nunchuk';"
+    "ncStatus.textContent=(d.attached?'Connected':'Disconnected')+' · stick '+d.stick.join(', ')+"
+    "(d.c?' · C':'')+(d.z?' · Z':'')+(d.encrypted?(d.unsupported_key?"
+    "' · encryption key unsupported':' · encrypted'):'')+(d.attached&&d.motion_plus_active?"
+    "(d.mp_mode===5?' · via MotionPlus passthrough':' · behind MotionPlus (not passthrough)'):'')}"
+    "async function ncPost(body){const r=await fetch('/api/nunchuk',{method:'POST',"
+    "headers:{'Content-Type':'application/x-www-form-urlencoded'},body});"
+    "if(!r.ok)throw Error(await r.text());ncShow(await r.json())}"
+    "async function ncFlush(){if(ncBusy)return;ncBusy=true;try{while(ncDirty){ncDirty=false;"
+    "await ncPost('sx='+nc.sx+'&sy='+nc.sy+'&c='+nc.c+'&z='+nc.z)}}"
+    "catch(e){ncStatus.textContent='Nunchuk error: '+e.message}finally{ncBusy=false}}"
+    "function ncSend(){ncDirty=true;ncFlush()}"
+    "ncToggle.addEventListener('click',()=>ncPost('attached='+(ncAttached?0:1)).catch(e=>"
+    "ncStatus.textContent='Nunchuk error: '+e.message));"
+    "function ncStick(e){const r=ncPad.getBoundingClientRect(),rad=r.width/2;"
+    "let dx=(e.clientX-r.left-rad)/rad,dy=(e.clientY-r.top-rad)/rad;const m=Math.hypot(dx,dy);"
+    "if(m>1){dx/=m;dy/=m}ncKnob.style.left=(50+dx*50)+'%';ncKnob.style.top=(50+dy*50)+'%';"
+    "nc.sx=Math.round(128+dx*96);nc.sy=Math.round(128-dy*96);ncSend()}"
+    "function ncCenter(){ncKnob.style.left='50%';ncKnob.style.top='50%';nc.sx=128;nc.sy=128;ncSend()}"
+    "ncPad.addEventListener('pointerdown',e=>{e.preventDefault();ncPad.setPointerCapture(e.pointerId);ncStick(e)});"
+    "ncPad.addEventListener('pointermove',e=>{if(ncPad.hasPointerCapture(e.pointerId))ncStick(e)});"
+    "for(const ev of ['pointerup','pointercancel'])ncPad.addEventListener(ev,ncCenter);"
+    "document.querySelectorAll('[data-nc]').forEach(b=>{const k=b.dataset.nc;"
+    "b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);"
+    "b.classList.add('pressed');nc[k]=1;ncSend()});"
+    "for(const ev of ['pointerup','pointercancel'])b.addEventListener(ev,()=>{"
+    "if(!nc[k])return;b.classList.remove('pressed');nc[k]=0;ncSend()});"
+    "b.addEventListener('contextmenu',e=>e.preventDefault())});"
+    "async function ncRefresh(){if(document.hidden||ncBusy)return;try{const r=await fetch('/api/nunchuk',"
+    "{cache:'no-store'});if(r.ok)ncShow(await r.json())}catch(e){}}ncRefresh();setInterval(ncRefresh,2000);"
     "</script></body></html>";
 
 static uint16_t get_button_mask(const char *name)
@@ -601,6 +654,110 @@ static esp_err_t button_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+static esp_err_t send_nunchuk_state(httpd_req_t *req)
+{
+    wiimote_nunchuk_status_t status;
+    wiimote_nunchuk_get_status(&status);
+    char response[256];
+    int length = snprintf(response, sizeof(response),
+                          "{\"attached\":%s,\"source\":\"web\",\"stick\":[%u,%u],"
+                          "\"accel\":[%u,%u,%u],\"c\":%s,\"z\":%s,\"encrypted\":%s,"
+                          "\"unsupported_key\":%s,\"encryption_enables\":%lu,"
+                          "\"motion_plus_active\":%s,\"mp_mode\":%u}",
+                          status.attached ? "true" : "false",
+                          status.input.stick_x, status.input.stick_y,
+                          status.input.accel[0], status.input.accel[1], status.input.accel[2],
+                          status.input.c ? "true" : "false", status.input.z ? "true" : "false",
+                          status.encrypted ? "true" : "false",
+                          status.unsupported_key ? "true" : "false",
+                          (unsigned long)status.encryption_enables,
+                          wiimote_motion_plus_is_active() ? "true" : "false",
+                          wiimote_motion_plus_mode());
+    if (length < 0 || (size_t)length >= sizeof(response)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "nunchuk response formatting failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, response, (ssize_t)length);
+}
+
+static esp_err_t nunchuk_get_handler(httpd_req_t *req)
+{
+    return send_nunchuk_state(req);
+}
+
+static bool parse_flag(const char *text, bool *value)
+{
+    if ((text[0] != '0' && text[0] != '1') || text[1] != '\0') return false;
+    *value = text[0] == '1';
+    return true;
+}
+
+static bool parse_byte(const char *text, uint8_t *value)
+{
+    char *end = NULL;
+    long parsed = strtol(text, &end, 10);
+    if (end == text || *end != '\0' || parsed < 0 || parsed > 255) return false;
+    *value = (uint8_t)parsed;
+    return true;
+}
+
+/* Form fields (all optional): attached=0|1, sx/sy=0..255, c=0|1, z=0|1. */
+static esp_err_t nunchuk_post_handler(httpd_req_t *req)
+{
+    if (req->content_len == 0 || req->content_len > MAX_HTTP_BODY) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid request size");
+        return ESP_FAIL;
+    }
+    char body[MAX_HTTP_BODY + 1];
+    size_t total = 0;
+    while (total < req->content_len) {
+        int received = httpd_req_recv(req, body + total, req->content_len - total);
+        if (received <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "request body missing");
+            return ESP_FAIL;
+        }
+        total += (size_t)received;
+    }
+    body[total] = '\0';
+
+    wiimote_nunchuk_status_t status;
+    wiimote_nunchuk_get_status(&status);
+    wiimote_nunchuk_input_t input = status.input;
+    bool attached = status.attached;
+    bool have_attached = false;
+    char *save = NULL;
+    for (char *token = strtok_r(body, "&", &save); token != NULL;
+         token = strtok_r(NULL, "&", &save)) {
+        bool ok;
+        if (strncmp(token, "attached=", 9) == 0) {
+            ok = parse_flag(token + 9, &attached);
+            have_attached = ok;
+        } else if (strncmp(token, "sx=", 3) == 0) {
+            ok = parse_byte(token + 3, &input.stick_x);
+        } else if (strncmp(token, "sy=", 3) == 0) {
+            ok = parse_byte(token + 3, &input.stick_y);
+        } else if (strncmp(token, "c=", 2) == 0) {
+            ok = parse_flag(token + 2, &input.c);
+        } else if (strncmp(token, "z=", 2) == 0) {
+            ok = parse_flag(token + 2, &input.z);
+        } else {
+            ok = false;
+        }
+        if (!ok) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid nunchuk field");
+            return ESP_FAIL;
+        }
+    }
+    wiimote_nunchuk_set_input(&input);
+    if (have_attached && wiimote_reports_set_nunchuk_attached(attached)) {
+        ESP_LOGI(TAG, "Web Nunchuk %s", attached ? "connected" : "disconnected");
+    }
+    return send_nunchuk_state(req);
+}
+
 static esp_err_t sync_handler(httpd_req_t *req, bool general_discoverable)
 {
 #if WIIMOTE_UPSTREAM_DISCOVERY_BASELINE
@@ -874,6 +1031,12 @@ static const httpd_uri_t s_sync_rearm_uri = {
     .uri = "/api/bt/rearm-sync", .method = HTTP_POST,
     .handler = sync_rearm_handler, .user_ctx = NULL,
 };
+static const httpd_uri_t s_nunchuk_get_uri = {
+    .uri = "/api/nunchuk", .method = HTTP_GET, .handler = nunchuk_get_handler, .user_ctx = NULL,
+};
+static const httpd_uri_t s_nunchuk_post_uri = {
+    .uri = "/api/nunchuk", .method = HTTP_POST, .handler = nunchuk_post_handler, .user_ctx = NULL,
+};
 static const httpd_uri_t s_reconnect_uri = {
     .uri = "/api/reconnect", .method = HTTP_POST,
     .handler = reconnect_handler, .user_ctx = NULL,
@@ -882,7 +1045,7 @@ static const httpd_uri_t s_reconnect_uri = {
 static void start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 14;
+    config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -895,6 +1058,8 @@ static void start_http_server(void)
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_imu_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_bus_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_button_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_nunchuk_get_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_nunchuk_post_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_limited_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_general_uri));

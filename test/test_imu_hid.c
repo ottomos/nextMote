@@ -10,6 +10,7 @@
 #include "imu_service.h"
 #include "wiimote_accel.h"
 #include "wiimote_motion_plus.h"
+#include "wiimote_nunchuk.h"
 #include "wiimote_protocol.h"
 #include "wiimote_reports.h"
 #include "wiimote_state.h"
@@ -313,6 +314,157 @@ static void test_motion_plus(void)
     assert(mapped[0] == 1 && mapped[1] == 2 && mapped[2] == 3);
 #endif
 }
+static uint8_t nc_decrypt(uint8_t value) { return (uint8_t)((value ^ 0x97) + 0x97); }
+static void test_nunchuk(void)
+{
+    uint8_t out[16];
+    uint8_t error = 0xff;
+    wiimote_motion_plus_reset();
+    wiimote_nunchuk_reset();
+    assert(!wiimote_nunchuk_is_attached());
+    assert(!wiimote_nunchuk_read(0x52, 0xfa, 6, out, &error));
+    const uint8_t init = 0x55;
+    assert(!wiimote_nunchuk_write(0x52, 0xf0, &init, 1, &error));
+
+    wiimote_state_open();
+    wiimote_state_set_report_mode(0x35, true);
+    sends = 0;
+    assert(wiimote_reports_set_nunchuk_attached(true));
+    assert(!wiimote_reports_set_nunchuk_attached(true));
+    assert(sends == 1 && received_id == 0x20 && (received[2] & 0x02));
+    uint8_t mode = 0xff;
+    bool continuous = false;
+    wiimote_state_get_report_mode(&mode, &continuous);
+    assert(mode == 0 && continuous);
+
+    assert(!wiimote_nunchuk_read(0x53, 0xfa, 6, out, &error));
+    assert(wiimote_nunchuk_write(0x52, 0xf0, &init, 1, &error) && error == 0);
+    const uint8_t type = 0;
+    assert(wiimote_nunchuk_write(0x52, 0xfb, &type, 1, &error) && error == 0);
+    assert(wiimote_nunchuk_read(0x52, 0xfa, 6, out, &error) && error == 0);
+    const uint8_t id[6] = {0, 0, 0xa4, 0x20, 0, 0};
+    assert(memcmp(out, id, 6) == 0);
+    assert(wiimote_nunchuk_read(0x52, 0x01fa, 6, out, &error) && error == 0);
+    assert(memcmp(out, id, 6) == 0);
+    assert(wiimote_nunchuk_read(0x52, 0x20, 16, out, &error) && error == 0);
+    uint8_t checksum = 0x55;
+    for (int i = 0; i < 14; ++i) checksum = (uint8_t)(checksum + out[i]);
+    assert(out[14] == checksum && out[15] == (uint8_t)(checksum + 0x55));
+    assert(out[0] == 0x80 && out[4] == 0xb3 && out[8] == 0xe0 && out[9] == 0x20 && out[10] == 0x80);
+    uint8_t mirror[16];
+    assert(wiimote_nunchuk_read(0x52, 0x30, 16, mirror, &error) && memcmp(out, mirror, 16) == 0);
+    assert(wiimote_nunchuk_read(0x52, 0xff, 2, out, &error) && error != 0);
+
+    wiimote_nunchuk_input_t input;
+    wiimote_nunchuk_neutral_input(&input);
+    wiimote_reports_send_data(0x35);
+    const uint8_t *ext = received + 5;
+    assert(ext[0] == 0x80 && ext[1] == 0x80 && ext[2] == 0x80 && ext[4] == 0xb3);
+    assert((ext[5] & 0x03) == 0x03);
+    input.stick_x = 0x20; input.stick_y = 0xe0;
+    input.accel[0] = 0x201; input.accel[1] = 0x202; input.accel[2] = 0x2cf;
+    input.c = true;
+    wiimote_nunchuk_set_input(&input);
+    wiimote_reports_send_data(0x35);
+    assert(ext[0] == 0x20 && ext[1] == 0xe0 && ext[2] == 0x80 && ext[3] == 0x80 && ext[4] == 0xb3);
+    assert(ext[5] == ((3 << 6) | (2 << 4) | (1 << 2) | 0x01));
+    input.c = false; input.z = true;
+    wiimote_nunchuk_set_input(&input);
+    wiimote_reports_send_data(0x32);
+    assert(received_length == 10 && (received[2 + 5] & 0x03) == 0x02);
+    wiimote_reports_send_data(0x3d);
+    assert(received[0] == 0x20 && received[1] == 0xe0 && received[6] == 0);
+
+    const uint8_t zero_key[16] = {0};
+    assert(wiimote_nunchuk_write(0x52, 0x40, zero_key, 16, &error));
+    const uint8_t enable = 0xaa;
+    assert(wiimote_nunchuk_write(0x52, 0xf0, &enable, 1, &error));
+    wiimote_nunchuk_status_t status;
+    wiimote_nunchuk_get_status(&status);
+    assert(status.encrypted && !status.unsupported_key && status.encryption_enables == 1);
+    wiimote_reports_send_data(0x35);
+    assert(nc_decrypt(ext[0]) == 0x20 && nc_decrypt(ext[1]) == 0xe0 && nc_decrypt(ext[4]) == 0xb3);
+    assert(nc_decrypt(ext[6]) == 0);
+    assert(wiimote_nunchuk_read(0x52, 0xfa, 6, out, &error));
+    for (int i = 0; i < 6; ++i) assert(nc_decrypt(out[i]) == id[i]);
+    const uint8_t key_byte = 0x12;
+    assert(wiimote_nunchuk_write(0x52, 0x45, &key_byte, 1, &error));
+    wiimote_reports_send_data(0x35);
+    assert(ext[0] == 0x20);
+    wiimote_nunchuk_get_status(&status);
+    assert(status.unsupported_key);
+
+    sends = 0;
+    assert(wiimote_reports_set_nunchuk_attached(false));
+    assert(sends == 1 && received_id == 0x20 && !(received[2] & 0x02));
+    assert(!wiimote_nunchuk_read(0x52, 0xfa, 6, out, &error));
+    wiimote_reports_send_data(0x35);
+    for (int i = 0; i < 16; ++i) assert(received[5 + i] == 0);
+    assert(wiimote_reports_set_nunchuk_attached(true));
+    wiimote_nunchuk_get_status(&status);
+    assert(!status.encrypted && !status.unsupported_key);
+
+    /* MotionPlus with the Nunchuk on its passthrough port. */
+    wiimote_motion_plus_reset();
+    bool changed = true;
+    const uint8_t plain_mode = 0x04;
+    assert(wiimote_motion_plus_write(0x53, 0xfe, &plain_mode, 1, &error, &changed));
+    assert(!changed && wiimote_motion_plus_mode() == 0x04);
+    imu.gyro_available = false;
+    for (int i = 0; i < 2; ++i) {
+        wiimote_reports_send_data(0x35);
+        assert((ext[5] & 0x02) && (ext[4] & 0x01));
+    }
+    assert(wiimote_motion_plus_write(0x52, 0xf0, &init, 1, &error, &changed) && changed);
+    const uint8_t pass_mode = 0x05;
+    assert(wiimote_motion_plus_write(0x53, 0xfe, &pass_mode, 1, &error, &changed));
+    assert(!changed && wiimote_motion_plus_mode() == 0x05);
+    input.stick_x = 0x31; input.stick_y = 0xc2;
+    input.accel[0] = 0x2ab; input.accel[1] = 0x156; input.accel[2] = 0x3fd;
+    input.c = true; input.z = false;
+    wiimote_nunchuk_set_input(&input);
+    unsigned mp_frames = 0, nc_frames = 0;
+    for (int i = 0; i < 6; ++i) {
+        wiimote_reports_send_data(0x37);
+        const uint8_t *e = received + 15;
+        assert(e[4] & 0x01);
+        if (e[5] & 0x02) {
+            ++mp_frames;
+            continue;
+        }
+        ++nc_frames;
+        assert(e[0] == 0x31 && e[1] == 0xc2 && (e[5] & 0x03) == 0);
+        const unsigned ax = (unsigned)(e[2] << 2) | ((e[5] >> 3) & 2);
+        const unsigned ay = (unsigned)(e[3] << 2) | ((e[5] >> 4) & 2);
+        const unsigned az = (unsigned)((e[4] & 0xfe) << 2) | ((e[5] >> 5) & 6);
+        assert(ax == (0x2ab & ~1U) && ay == (0x156 & ~1U) && az == (0x3fd & ~1U));
+        assert(!(e[5] & 0x08) && (e[5] & 0x04)); /* C pressed, Z released */
+    }
+    assert(mp_frames == 3 && nc_frames == 3);
+    /* The M+ mirrors the Nunchuk ID and plaintext calibration (WSR checks these). */
+    uint8_t nc_calib[16];
+    assert(wiimote_nunchuk_write(0x52, 0xf0, &enable, 1, &error)); /* encryption must not leak */
+    uint8_t nc_id[6];
+    assert(wiimote_nunchuk_passthrough_info(nc_id, nc_calib));
+    assert(wiimote_motion_plus_read(0x52, 0x40, 16, out, &error) && error == 0);
+    assert(memcmp(out, nc_calib, 16) == 0);
+    assert((uint8_t)(out[14]) == (uint8_t)(0x55 + out[0] + out[1] + out[2] + out[3] + out[4] +
+                                           out[5] + out[6] + out[7] + out[8] + out[9] +
+                                           out[10] + out[11] + out[12] + out[13]));
+    assert(wiimote_motion_plus_read(0x52, 0xf6, 4, out, &error) && error == 0);
+    assert(out[0] == 0x00 && out[2] == 0x00 && out[3] == 0x00); /* Nunchuk ID bytes 4, 0, 5 */
+    wiimote_nunchuk_set_attached(false);
+    assert(wiimote_motion_plus_read(0x52, 0x40, 16, out, &error) && out[14] == 0 && out[15] == 0);
+    for (int i = 0; i < 2; ++i) {
+        wiimote_reports_send_data(0x37);
+        assert((received[15 + 5] & 0x02) && !(received[15 + 4] & 0x01));
+    }
+    wiimote_motion_plus_reset();
+    wiimote_state_close();
+    sends = 0;
+    assert(!wiimote_reports_set_nunchuk_attached(false));
+    assert(sends == 0);
+}
 int main(void)
 {
     test_freshness();
@@ -320,5 +472,6 @@ int main(void)
     test_reports();
     test_cadence();
     test_motion_plus();
-    puts("IMU HID encoding, report integration, IR/buttons, fallback, cadence and MotionPlus: PASS");
+    test_nunchuk();
+    puts("IMU HID encoding, report integration, IR/buttons, fallback, cadence, MotionPlus and Nunchuk: PASS");
 }

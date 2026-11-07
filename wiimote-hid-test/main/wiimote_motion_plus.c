@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
+#include "wiimote_nunchuk.h"
 #include "wiimote_protocol.h"
 
 /*
@@ -24,10 +25,14 @@ static const char *TAG = "motion_plus";
 
 #define MP_REG_DATA 0x00
 #define MP_REG_CALIBRATION 0x20
+#define MP_REG_PASSTHROUGH_CALIB 0x40
 #define MP_REG_CHALLENGE 0x50
 #define MP_REG_INIT 0xf0
 #define MP_REG_CHALLENGE_TYPE 0xf1
+#define MP_REG_PASSTHROUGH_ID4 0xf6
 #define MP_REG_CHALLENGE_STATE 0xf7
+#define MP_REG_PASSTHROUGH_ID0 0xf8
+#define MP_REG_PASSTHROUGH_ID5 0xf9
 #define MP_REG_ID 0xfa
 #define MP_REG_MODE 0xfe
 #define MP_CHALLENGE_LEN 64
@@ -105,6 +110,14 @@ bool wiimote_motion_plus_is_active(void)
     return active;
 }
 
+uint8_t wiimote_motion_plus_mode(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    const uint8_t mode = s_active ? s_regs[MP_REG_ID + 4] : 0;
+    portEXIT_CRITICAL(&s_mux);
+    return mode;
+}
+
 static void advance_challenge_locked(int64_t now)
 {
     if (!s_active || s_ready_at_us == 0 || now < s_ready_at_us) return;
@@ -152,7 +165,24 @@ bool wiimote_motion_plus_read(uint8_t slave, uint16_t address, uint8_t length,
     if (slave != WIIMOTE_I2C_SLAVE_MOTION_PLUS && slave != WIIMOTE_I2C_SLAVE_EXTENSION)
         return false;
 
+    /* A real M+ copies the passthrough extension's ID and plaintext calibration
+     * into its own registers; WSR validates them before using the Nunchuk. */
+    uint8_t ext_id[6];
+    uint8_t ext_calib[16];
+    const bool ext = wiimote_nunchuk_passthrough_info(ext_id, ext_calib);
+
     portENTER_CRITICAL(&s_mux);
+    if (ext) {
+        memcpy(&s_regs[MP_REG_PASSTHROUGH_CALIB], ext_calib, sizeof(ext_calib));
+        s_regs[MP_REG_PASSTHROUGH_ID0] = ext_id[0];
+        s_regs[MP_REG_PASSTHROUGH_ID4] = ext_id[4];
+        s_regs[MP_REG_PASSTHROUGH_ID5] = ext_id[5];
+    } else {
+        memset(&s_regs[MP_REG_PASSTHROUGH_CALIB], 0, sizeof(ext_calib));
+        s_regs[MP_REG_PASSTHROUGH_ID0] = 0;
+        s_regs[MP_REG_PASSTHROUGH_ID4] = 0;
+        s_regs[MP_REG_PASSTHROUGH_ID5] = 0;
+    }
     const bool owns = s_active ? slave == WIIMOTE_I2C_SLAVE_EXTENSION :
                                  slave == WIIMOTE_I2C_SLAVE_MOTION_PLUS;
     if (!owns) {
@@ -214,7 +244,9 @@ bool wiimote_motion_plus_write(uint8_t slave, uint16_t address, const uint8_t *d
             const uint8_t mode = s_regs[MP_REG_MODE];
             if (is_activation_mode(mode)) {
                 activate_locked(mode, now);
-                *status_changed = true;
+                /* WiiBrew: activation reports a plug event only when nothing is
+                 * attached to the M+ passthrough port. */
+                *status_changed = !wiimote_nunchuk_is_attached();
                 event = "activated";
             }
         }
@@ -272,7 +304,7 @@ void wiimote_motion_plus_encode(uint8_t output[WIIMOTE_MOTION_PLUS_DATA_LEN],
     output[1] = (uint8_t)roll;
     output[2] = (uint8_t)pitch;
     output[3] = (uint8_t)(((yaw >> 8) << 2) | (yaw_slow ? 0x02U : 0U) | (pitch_slow ? 0x01U : 0U));
-    /* Bit 0: extension on the M+ passthrough port (none). */
+    /* Bit 0 (extension on the M+ passthrough port) is set by the caller. */
     output[4] = (uint8_t)(((roll >> 8) << 2) | (roll_slow ? 0x02U : 0U));
     /* Bit 1: this is M+ data (not passthrough extension data). */
     output[5] = (uint8_t)(((pitch >> 8) << 2) | 0x02U);

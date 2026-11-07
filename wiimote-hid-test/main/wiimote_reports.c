@@ -14,6 +14,7 @@
 #include "imu_service.h"
 #include "wiimote_accel.h"
 #include "wiimote_motion_plus.h"
+#include "wiimote_nunchuk.h"
 #include "wiimote_protocol.h"
 #include "wiimote_state.h"
 
@@ -163,13 +164,47 @@ static void fill_ir(uint8_t *output, size_t length)
 static void fill_extension(uint8_t *output, size_t length)
 {
     memset(output, 0, length);
-    if (wiimote_motion_plus_is_active() && length >= WIIMOTE_MOTION_PLUS_DATA_LEN) {
+    const uint8_t mp_mode = wiimote_motion_plus_mode();
+    if (mp_mode != 0 && length >= WIIMOTE_MOTION_PLUS_DATA_LEN) {
+        const bool nunchuk = wiimote_nunchuk_is_attached();
+        /* Nunchuk passthrough: alternate M+ and Nunchuk frames (WiiBrew). */
+        static bool s_passthrough_nunchuk_next;
+        if (mp_mode == 0x05 && nunchuk) {
+            s_passthrough_nunchuk_next = !s_passthrough_nunchuk_next;
+            if (s_passthrough_nunchuk_next) {
+                wiimote_nunchuk_encode_passthrough(output);
+                return;
+            }
+        }
         imu_state_t imu;
         imu_service_get_state(&imu);
         float rates[3] = {0};
         if (imu.gyro_available) wiimote_accel_map_gyro(imu.gyro_rad_s, rates);
         wiimote_motion_plus_encode(output, rates, imu.gyro_available);
+        if (nunchuk) output[4] |= 0x01;
+    } else if (wiimote_nunchuk_is_attached()) {
+        wiimote_nunchuk_encode(output, (uint8_t)length);
     }
+}
+
+static bool extension_present(void)
+{
+    return wiimote_motion_plus_is_active() || wiimote_nunchuk_is_attached();
+}
+
+bool wiimote_reports_set_nunchuk_attached(bool attached)
+{
+    const bool was_present = extension_present();
+    if (!wiimote_nunchuk_set_attached(attached)) return false;
+    if (extension_present() != was_present && wiimote_state_is_connected()) {
+        /* Like a real remote: an extension port event disables data reporting
+         * until the host sets the report mode again, then sends a status report. */
+        bool continuous;
+        wiimote_state_get_report_mode(NULL, &continuous);
+        wiimote_state_set_report_mode(0, continuous);
+        (void)wiimote_reports_send_status();
+    }
+    return true;
 }
 
 /* Layouts per mode: B=buttons(2) A=accel(3) I=IR E=extension. */
@@ -302,7 +337,7 @@ uint8_t wiimote_reports_send_status(void)
         state.buttons[0],
         state.buttons[1],
         (uint8_t)(state.leds |
-                  (wiimote_motion_plus_is_active() ? 0x02U : 0U) |
+                  (extension_present() ? 0x02U : 0U) |
                   ((state.ir_logic_enabled && state.ir_sensor_enabled) ? 0x08U : 0U)),
         0,
         0,

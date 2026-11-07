@@ -11,6 +11,7 @@ idf_component_register(SRCS
                     "wiimote_commands.c"
                     "wiimote_memory.c"
                     "wiimote_motion_plus.c"
+                    "wiimote_nunchuk.c"
                     "wiimote_controls.c"
                     "wiimote_protocol.c"
                     "wiimote_descriptor.c"

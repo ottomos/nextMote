@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "ir_camera.h"
@@ -14,6 +15,8 @@ uint8_t wiimote_reports_send_input(uint8_t report_id, const uint8_t *data, uint1
 uint8_t wiimote_reports_send_data(uint8_t report_id);
 uint8_t wiimote_reports_send_current(void);
 uint8_t wiimote_reports_send_status(void);
+/* Plugs or unplugs the emulated Nunchuk; returns true when the state changed. */
+bool wiimote_reports_set_nunchuk_attached(bool attached);
 void wiimote_reports_send_interrupt_ack(uint8_t report_id, uint8_t error);
 void wiimote_reports_send_memory_reply(uint8_t error, uint16_t address,
                                        const uint8_t *data, uint8_t length);
