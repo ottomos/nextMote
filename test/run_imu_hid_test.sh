@@ -23,3 +23,7 @@ build_and_run
 build_and_run -DWIIMOTE_ACCEL_X_AXIS=1 -DWIIMOTE_ACCEL_Y_AXIS=0 \
     -DWIIMOTE_ACCEL_Z_AXIS=2 -DWIIMOTE_ACCEL_X_SIGN=-1 \
     -DWIIMOTE_ACCEL_Y_SIGN=1 -DWIIMOTE_ACCEL_Z_SIGN=1
+
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -I"$root/wiimote-hid-test/main" \
+    "$root/test/test_nextmote_form.c" "$root/wiimote-hid-test/main/nextmote_form.c" -o "$binary"
+"$binary"

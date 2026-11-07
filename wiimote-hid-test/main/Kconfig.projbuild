@@ -51,21 +51,7 @@ menu "HID Example Configuration"
         default y
         help
             Connect as a Wi-Fi station and serve a local web page for Wii Remote
-            button press/release control. Configure the station SSID and password
-            below. Do not commit those credentials.
+            button press/release control. The network is chosen at runtime in
+            Wi-Fi setup mode and stored in NVS (see the README).
 
-    config EXAMPLE_WIFI_SSID
-        string "Wi-Fi SSID"
-        depends on EXAMPLE_WIFI_WEB_CONTROL
-        default ""
-        help
-            Wi-Fi station network name. Keep the password out of source control.
-
-    config EXAMPLE_WIFI_PASSWORD
-        string "Wi-Fi password"
-        depends on EXAMPLE_WIFI_WEB_CONTROL
-        default ""
-        help
-            Wi-Fi station password. This value is stored in the local ignored
-            sdkconfig and compiled into firmware; never commit it.
 endmenu

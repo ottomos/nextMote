@@ -21,11 +21,15 @@ idf_component_register(SRCS
                     "wiimote_sdp.c"
                     "wiimote_sdp_values.c"
                     "wiimote_web.c"
+                    "nextmote_form.c"
+                    "nextmote_wifi_config.c"
+                    "nextmote_setup.c"
+                    "nextmote_console.c"
                     "sensor_i2c_bus.c"
                     "ir_camera.c"
                     "ir_camera_service.c"
                     "imu_service.c"
-                    PRIV_REQUIRES bno085 bt esp_coex esp_http_server esp_netif esp_wifi esp_timer esp_driver_gpio esp_driver_i2c nvs_flash
+                    PRIV_REQUIRES bno085 bt esp_coex esp_driver_uart lwip esp_http_server esp_netif esp_wifi esp_timer esp_driver_gpio esp_driver_i2c nvs_flash
                     INCLUDE_DIRS ".")
 
 option(WIIMOTE_DIAGNOSTIC_GIAC_ONLY "Hold GIAC during Limited SYNC for a bounded timing probe" OFF)

@@ -22,7 +22,7 @@ The serial trace shows Mario Kart Wii reads EEPROM address `0x1770`, length 1. D
 
 ## Current behavior and missing wiimote features
 
-The Wi-Fi page places **Reconnect** and **Pair** side by side: Reconnect targets the **last host**, while Pair looks for a **next host**. Both actions restart the Bluedroid host and re-register its GAP/HID/SDP state without restarting the ESP32; Wi-Fi remains available. Reconnect preserves the saved host, Bluetooth bond, and NVS reconnect key, then reconnects to that host. Pair is the host-switch action: when HIDD reports a plugged virtual cable, it requests Virtual Cable Unplug/local unplug and waits up to 5 seconds for completion before removing the ESP's stored Bluetooth bonds and `last_host`. It then restarts Bluedroid and opens Limited discovery after HID/SDP registration is ready. If VCU completion is late or missing, firmware logs the result and continues with explicit bond cleanup and the Bluetooth-only restart; it does not unregister/re-register HIDD. The Pair countdown starts only once `/api/status` confirms the window is open. If the restart is still in progress, the page reports the current `pairing_phase` and keeps polling rather than asking for a second click. The old host may retain its reciprocal pairing record; without pressing Pair, power-up still reconnects to the last successfully paired host. The 1+2 gameplay control does not trigger Bluetooth pairing. SSID/password are local `sdkconfig` values configured through `idf.py menuconfig`; `sdkconfig` is ignored and must never be committed.
+The Wi-Fi page places **Reconnect** and **Pair** side by side: Reconnect targets the **last host**, while Pair looks for a **next host**. Both actions restart the Bluedroid host and re-register its GAP/HID/SDP state without restarting the ESP32; Wi-Fi remains available. Reconnect preserves the saved host, Bluetooth bond, and NVS reconnect key, then reconnects to that host. Pair is the host-switch action: when HIDD reports a plugged virtual cable, it requests Virtual Cable Unplug/local unplug and waits up to 5 seconds for completion before removing the ESP's stored Bluetooth bonds and `last_host`. It then restarts Bluedroid and opens Limited discovery after HID/SDP registration is ready. If VCU completion is late or missing, firmware logs the result and continues with explicit bond cleanup and the Bluetooth-only restart; it does not unregister/re-register HIDD. The Pair countdown starts only once `/api/status` confirms the window is open. If the restart is still in progress, the page reports the current `pairing_phase` and keeps polling rather than asking for a second click. The old host may retain its reciprocal pairing record; without pressing Pair, power-up still reconnects to the last successfully paired host. The 1+2 gameplay control does not trigger Bluetooth pairing. The Wi-Fi network is chosen at runtime in Wi-Fi setup mode and stored in NVS (see **Wi-Fi setup mode** below); no credentials are compiled in.
 
 Wi-Fi/Bluetooth coexistence: the ESP32 time-shares one 2.4 GHz radio between Wi-Fi and Bluetooth Classic. The station is limited to a 20 MHz channel (set before `esp_wifi_start()`) and Wi-Fi power save is turned off once associated (`WIFI_PS_NONE`, accepted with coexistence active), so the station does not sleep through traffic for the web page. On `nxt13-fix-wifi-bt-conn` with the DolphinBar connected and the page-equivalent load (status 1 s, camera and IMU every 120 ms, a button toggle every 0.5 s), a 15-minute run had 0 status failures and 10 of about 10,600 other requests fail; the HID link never dropped, every HID send returned `ESP_OK`, and no `bcn_timeout` occurred. A following 5-minute run had 0 failures. That historical baseline kept HID acceleration neutral; the current `nxt12-imu-integration` default sends live BNO08x acceleration and includes those coexistence changes.
 
@@ -115,6 +115,22 @@ The firmware does **not** yet provide:
 
 Games requiring unimplemented extensions or unvalidated MotionPlus behavior may not work. The observed FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional wiimote initialization/report handling beyond pairing and a button report.
 
+## Wi-Fi setup mode
+
+On a factory-fresh board (no network stored in NVS) nextMote starts in **Wi-Fi setup mode**. In this mode only the setup network and page run: Bluetooth, the IMU and the camera are **not** started.
+
+1. Join the open Wi-Fi network `nextMote-Setup-XXXX` (last four hex digits of the SoftAP MAC). Phones usually open the page automatically (captive DNS + redirect); otherwise open `http://192.168.4.1/`.
+2. Pick your network from the scan list (only **2.4 GHz** networks work), enter the password and press connect. The device tests the connection; on success it stores the network in NVS and restarts into normal mode after 10 s. Errors (wrong password, network not found) are shown on the page.
+3. In normal mode the device joins the stored network and serves the normal web app at the IP printed on the serial console (also shown in `/api/status` together with the stored `ssid`).
+
+Triggers for testing (the stored network is kept unless you use `forget`):
+
+- Web app: **Wi-Fi setup** button (`POST /api/wifi/setup`).
+- Serial console (115200 baud, type a command and press Enter): `status`, `setup` (reboot into setup mode once), `normal` (leave setup mode), `forget` (erase the stored network = factory Wi-Fi state), `reboot`.
+- The setup request is one-shot: resetting the board while in setup mode returns to normal mode when a network is stored.
+
+There is no automatic fallback to setup mode when the stored network is unreachable. Setup-mode API: `GET /api/scan`, `POST /api/wifi` (form fields `ssid`, `password`), `GET /api/wifi/state`, `POST /api/setup/exit`.
+
 ## Build and flash
 
 Requires ESP-IDF 6.0.x. Use an ESP32 target and the serial port for your board:
@@ -124,6 +140,8 @@ idf.py set-target esp32
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
 ```
+
+The custom `partitions.csv` gives the app almost the whole 4 MB flash (factory app 0x3F0000 at 0x10000; NVS at 0x9000 is unchanged, so Bluetooth bonds and Wi-Fi settings survive a reflash). After changing the partition table do a full `idf.py flash`.
 
 The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device mode, set the advertised name to `Nintendo RVL-CNT-01`, and increase the SDP attribute/padding buffers to publish the descriptor. The standard web SYNC endpoint opens a 30-second Limited window with CoD `0x002504`. `/api/sync/limited` is an alias of the standard path; `/api/sync/general` is the GIAC-only diagnostic.
 
