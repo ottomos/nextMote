@@ -9,6 +9,7 @@
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -16,6 +17,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "imu_service.h"
+#include "nextmote_form.h"
+#include "nextmote_wifi_config.h"
 #include "sensor_i2c_bus.h"
 #include "esp_timer.h"
 #include "wiimote_accel.h"
@@ -53,6 +56,7 @@ static wiimote_web_reconnect_callback_t s_reconnect_callback;
 static wiimote_web_virtual_cable_unplug_callback_t s_virtual_cable_unplug_callback;
 static wiimote_web_sync_rearm_callback_t s_sync_rearm_callback;
 static esp_netif_t *s_station;
+static char s_wifi_ssid[NEXTMOTE_WIFI_SSID_MAX + 1];
 static httpd_handle_t s_http_server;
 static unsigned s_retry_count;
 static bool s_hid_connected;
@@ -141,6 +145,8 @@ static const char INDEX_HTML[] =
     "background:#d4d8e2;position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none}"
     ".nc-buttons{display:flex;flex-direction:column;gap:14px}.nc-buttons button{width:72px;height:56px}"
     ".nunchuk-panel.off .nc-layout{opacity:.45}"
+    ".wifi-setup{margin:22px 0 8px;text-align:center}.wifi-setup button{background:#2a3555;color:#edf2ff;"
+    "border:0;border-radius:10px;padding:10px 18px;font:inherit}.wifi-setup small{display:block;margin-top:8px;color:#aab6d3}"
     "</style></head><body><main class='wrap'><h1>nextMote</h1>"
     "<div id='status'>Loading controller status…</div><div id='button-status' aria-live='polite'></div>"
     "<section class='pairing-panel' aria-label='Bluetooth host actions'>"
@@ -185,7 +191,9 @@ static const char INDEX_HTML[] =
     "<div>Yaw: <span id='imu-yaw'>-</span>°</div>"
     "<div id='imu-accel'>Waiting for accelerometer data</div>"
     "</div><div class='imu-cube-wrap'><div id='imu-cube' aria-label='IMU orientation box'></div>"
-    "</div></div></section></main><script>"
+    "</div></div></section>"
+    "<section class='wifi-setup'><button id='wifi-setup-button' type='button'>Wi-Fi setup</button>"
+    "<small id='wifi-setup-note'></small></section></main><script>"
     "const statusEl=document.querySelector('#status');const buttonStatusEl=document.querySelector('#button-status');"
     "const syncButton=document.querySelector('#sync-button');"
     "const syncButtonLabel=syncButton.querySelector('.action-label');"
@@ -373,6 +381,11 @@ static const char INDEX_HTML[] =
     "b.addEventListener('contextmenu',e=>e.preventDefault())});"
     "async function ncRefresh(){if(document.hidden||ncBusy)return;try{const r=await fetch('/api/nunchuk',"
     "{cache:'no-store'});if(r.ok)ncShow(await r.json())}catch(e){}}ncRefresh();setInterval(ncRefresh,2000);"
+    "document.querySelector('#wifi-setup-button').onclick=async()=>{"
+    "if(!confirm('Restart nextMote into Wi-Fi setup mode? Bluetooth stops until setup is finished or the device is reset.'))return;"
+    "const n=document.querySelector('#wifi-setup-note');try{const r=await fetch('/api/wifi/setup',{method:'POST'});"
+    "n.textContent=r.ok?'Restarting. Join the nextMote-Setup Wi-Fi network and open http://192.168.4.1/':"
+    "'Request failed'}catch(e){n.textContent='Request failed'}};"
     "</script></body></html>";
 
 static uint16_t get_button_mask(const char *name)
@@ -426,13 +439,15 @@ static esp_err_t status_handler(httpd_req_t *req)
     if (s_station && esp_netif_get_ip_info(s_station, &info) == ESP_OK) {
         snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
     }
-    char response[352];
+    char ssid_json[6 * NEXTMOTE_WIFI_SSID_MAX + 1];
+    nextmote_json_escape(s_wifi_ssid, ssid_json, sizeof(ssid_json));
+    char response[576];
     bool hid_connected = hid_connected_snapshot();
     bool sync_window_active = sync_window_snapshot();
     int length = snprintf(response, sizeof(response),
-             "{\"wifi\":%s,\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s,\"manual_reconnect\":%s,\"pairing_phase\":\"%s\"}",
+             "{\"wifi\":%s,\"ssid\":\"%s\",\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s,\"manual_reconnect\":%s,\"pairing_phase\":\"%s\"}",
              (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) ? "true" : "false",
-             hid_connected ? "true" : "false",
+             ssid_json, hid_connected ? "true" : "false",
              sync_window_active ? "true" : "false", ip, PAIRING_PROFILE, last_host,
              reconnect_pending ? "true" : "false",
              manual_reconnect_pending ? "true" : "false", pairing_phase);
@@ -988,6 +1003,30 @@ static esp_err_t reconnect_handler(httpd_req_t *req)
                               "{\"ok\":true,\"queued\":true,\"action\":\"reconnect_saved_host\"}");
 }
 
+static void restart_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+
+static esp_err_t wifi_setup_handler(httpd_req_t *req)
+{
+    esp_err_t err = nextmote_wifi_config_request_setup();
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, esp_err_to_name(err));
+    }
+    httpd_resp_set_status(req, "202 Accepted");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"action\":\"restart_into_setup\"}");
+    xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+static const httpd_uri_t s_wifi_setup_uri = {
+    .uri = "/api/wifi/setup", .method = HTTP_POST, .handler = wifi_setup_handler, .user_ctx = NULL,
+};
 static const httpd_uri_t s_index_uri = {
     .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL,
 };
@@ -1045,7 +1084,7 @@ static const httpd_uri_t s_reconnect_uri = {
 static void start_http_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
@@ -1070,6 +1109,7 @@ static void start_http_server(void)
 #endif
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_sync_rearm_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_reconnect_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_http_server, &s_wifi_setup_uri));
 
     esp_netif_ip_info_t info = {0};
     ESP_ERROR_CHECK(esp_netif_get_ip_info(s_station, &info));
@@ -1103,7 +1143,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     (void)arg;
     (void)event_data;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        ESP_LOGI(TAG, "Configured Wi-Fi SSID: %s", CONFIG_EXAMPLE_WIFI_SSID);
+        ESP_LOGI(TAG, "Stored Wi-Fi SSID: %s", s_wifi_ssid);
         ESP_LOGI(TAG, "Connecting to configured Wi-Fi network");
         esp_err_t err = esp_wifi_connect();
         if (err != ESP_OK) ESP_LOGW(TAG, "esp_wifi_connect: %s", esp_err_to_name(err));
@@ -1138,8 +1178,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 void wiimote_web_start(void)
 {
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
-    if (strlen(CONFIG_EXAMPLE_WIFI_SSID) == 0) {
-        ESP_LOGE(TAG, "Wi-Fi SSID is empty; configure the local sdkconfig");
+    char password[NEXTMOTE_WIFI_PASSWORD_MAX + 1];
+    if (!nextmote_wifi_config_load(s_wifi_ssid, password)) {
+        ESP_LOGE(TAG, "No stored Wi-Fi network; use serial command 'setup'");
         return;
     }
     s_wifi_events = xEventGroupCreate();
@@ -1162,9 +1203,10 @@ void wiimote_web_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
 
     wifi_config_t wifi_config = {0};
-    snprintf((char *)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", CONFIG_EXAMPLE_WIFI_SSID);
-    snprintf((char *)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", CONFIG_EXAMPLE_WIFI_PASSWORD);
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    memcpy(wifi_config.sta.ssid, s_wifi_ssid, strlen(s_wifi_ssid));
+    memcpy(wifi_config.sta.password, password, strlen(password));
+    wifi_config.sta.threshold.authmode = password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    memset(password, 0, sizeof(password));
     wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));

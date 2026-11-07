@@ -22,6 +22,9 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "nextmote_console.h"
+#include "nextmote_setup.h"
+#include "nextmote_wifi_config.h"
 #include "wiimote_commands.h"
 #include "wiimote_controls.h"
 #include "wiimote_discovery.h"
@@ -2139,6 +2142,15 @@ void app_main(void)
     ESP_ERROR_CHECK(wiimote_bt_trace_start());
 #endif
     ESP_ERROR_CHECK(nvs_flash_init());
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL && !WIIMOTE_DIAGNOSTIC_RADIO_ONLY
+    if (nextmote_wifi_config_boot_into_setup()) {
+        /* Setup mode runs only the setup Wi-Fi network and page. */
+        nextmote_console_start(true);
+        nextmote_setup_run();
+        return;
+    }
+    nextmote_console_start(false);
+#endif
     load_last_host();
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_BLE));
 

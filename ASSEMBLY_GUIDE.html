@@ -419,7 +419,9 @@ GPIO27 (INT, active low) ──────────────────�
   <ol class="steps">
     <li>Plug the USB cable in. The nextMote's power LED should light.</li>
     <li>From <code>firmware/wiimote-hid-test</code>, build and flash the ESP-IDF project (<code>idf.py build</code>, then <code>idf.py -p PORT -b 115200 flash</code>). Replace <code>PORT</code> with nextMote serial port.</li>
-    <li>Look for the startup lines:
+    <li id="initial-wifi-setup"><strong>Initialize Wi-Fi before checking sensors.</strong> If no network is saved, the board starts an open <code>nextMote-Setup-XXXX</code> network. Join it, stay connected despite any no-internet warning, and open <code>http://192.168.4.1/</code> if the captive page does not open automatically. Choose a 2.4 GHz network and enter the password. Shared dual-band names work through their 2.4 GHz radio; ESP32-WROOM cannot join 5 GHz. On success, note the assigned IP, wait about 10 seconds for the restart, rejoin your home Wi-Fi and open that IP.</li>
+    <li><strong>Setup mode intentionally does not start Bluetooth, the camera or the IMU.</strong> Missing sensor startup messages in this mode are not a wiring failure. After successful setup, later boots join the stored network directly. Its DHCP address can change: read <code>Wi-Fi connected; IP=...</code> in the serial boot log. The fixed <code>192.168.4.1</code> address is for setup mode only.</li>
+    <li>In normal mode, look for the startup lines:
       <ul>
         <li><code>SEN0158 initialized with DFRobot default profile</code> → camera initialized.</li>
         <li><code>BNO08x initialized at 0x4a</code> or <code>0x4b</code> → IMU found and rotation-vector reports enabled.</li>
@@ -429,6 +431,8 @@ GPIO27 (INT, active low) ──────────────────�
     <li>Open the web page at the IP printed in serial to see the live IR plot and the BNO08x orientation panel. The camera may report not detected during an IMU-only test; that does not prevent the IMU panel from working.</li>
     <li>Standard Wii Remote acceleration is implemented in reports <code>0x31</code>/<code>0x33</code> on the integration branch. An emulated MotionPlus from the BNO08x gyro is available only with the build flag <code>-DNEXTMOTE_ENABLE_MOTION_PLUS=1</code> (off by default; not yet tested in a game). Check mounting axes/signs in <code>wiimote-hid-test/main/wiimote_accel.h</code> for the final controller mounting; default mapping is direct X/Y/Z. See the <a href="./wiimote-hid-test/README.md#standard-wii-remote-motion-integration">motion test checklist</a> for remaining checks, including simultaneous camera/IMU hardware operation. A web preview or an open HID link alone is not proof that the console received motion data.</li>
   </ol>
+  <p>To reconfigure, press <strong>Wi-Fi setup</strong> in the normal web app or type <code>setup</code> in the 115200-baud serial console. This is one-shot and keeps the saved network; <code>normal</code> or a reset returns to normal mode when a network is saved. <code>forget</code> clears only Wi-Fi settings, not Bluetooth pairing. If the stored router is unavailable there is no automatic setup fallback: use serial <code>setup</code>. See the <a href="./wiimote-hid-test/README.md#wi-fi-setup-mode">full initialization and recovery instructions</a>.</p>
+  <p>Initialization validation, 7 November 2026: the user reports provisioning works really well. Laptop tests separately verified errors/retry, persistence and setup/reset triggers. The exact user browser and automatic captive-popup behavior were not specified.</p>
 
   <h3>Troubleshooting quick-reference</h3>
   <table>
