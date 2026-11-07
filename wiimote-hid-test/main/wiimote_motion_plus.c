@@ -25,10 +25,14 @@ static const char *TAG = "motion_plus";
 
 #define MP_REG_DATA 0x00
 #define MP_REG_CALIBRATION 0x20
+#define MP_REG_PASSTHROUGH_CALIB 0x40
 #define MP_REG_CHALLENGE 0x50
 #define MP_REG_INIT 0xf0
 #define MP_REG_CHALLENGE_TYPE 0xf1
+#define MP_REG_PASSTHROUGH_ID4 0xf6
 #define MP_REG_CHALLENGE_STATE 0xf7
+#define MP_REG_PASSTHROUGH_ID0 0xf8
+#define MP_REG_PASSTHROUGH_ID5 0xf9
 #define MP_REG_ID 0xfa
 #define MP_REG_MODE 0xfe
 #define MP_CHALLENGE_LEN 64
@@ -161,7 +165,24 @@ bool wiimote_motion_plus_read(uint8_t slave, uint16_t address, uint8_t length,
     if (slave != WIIMOTE_I2C_SLAVE_MOTION_PLUS && slave != WIIMOTE_I2C_SLAVE_EXTENSION)
         return false;
 
+    /* A real M+ copies the passthrough extension's ID and plaintext calibration
+     * into its own registers; WSR validates them before using the Nunchuk. */
+    uint8_t ext_id[6];
+    uint8_t ext_calib[16];
+    const bool ext = wiimote_nunchuk_passthrough_info(ext_id, ext_calib);
+
     portENTER_CRITICAL(&s_mux);
+    if (ext) {
+        memcpy(&s_regs[MP_REG_PASSTHROUGH_CALIB], ext_calib, sizeof(ext_calib));
+        s_regs[MP_REG_PASSTHROUGH_ID0] = ext_id[0];
+        s_regs[MP_REG_PASSTHROUGH_ID4] = ext_id[4];
+        s_regs[MP_REG_PASSTHROUGH_ID5] = ext_id[5];
+    } else {
+        memset(&s_regs[MP_REG_PASSTHROUGH_CALIB], 0, sizeof(ext_calib));
+        s_regs[MP_REG_PASSTHROUGH_ID0] = 0;
+        s_regs[MP_REG_PASSTHROUGH_ID4] = 0;
+        s_regs[MP_REG_PASSTHROUGH_ID5] = 0;
+    }
     const bool owns = s_active ? slave == WIIMOTE_I2C_SLAVE_EXTENSION :
                                  slave == WIIMOTE_I2C_SLAVE_MOTION_PLUS;
     if (!owns) {

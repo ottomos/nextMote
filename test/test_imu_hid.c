@@ -441,7 +441,20 @@ static void test_nunchuk(void)
         assert(!(e[5] & 0x08) && (e[5] & 0x04)); /* C pressed, Z released */
     }
     assert(mp_frames == 3 && nc_frames == 3);
+    /* The M+ mirrors the Nunchuk ID and plaintext calibration (WSR checks these). */
+    uint8_t nc_calib[16];
+    assert(wiimote_nunchuk_write(0x52, 0xf0, &enable, 1, &error)); /* encryption must not leak */
+    uint8_t nc_id[6];
+    assert(wiimote_nunchuk_passthrough_info(nc_id, nc_calib));
+    assert(wiimote_motion_plus_read(0x52, 0x40, 16, out, &error) && error == 0);
+    assert(memcmp(out, nc_calib, 16) == 0);
+    assert((uint8_t)(out[14]) == (uint8_t)(0x55 + out[0] + out[1] + out[2] + out[3] + out[4] +
+                                           out[5] + out[6] + out[7] + out[8] + out[9] +
+                                           out[10] + out[11] + out[12] + out[13]));
+    assert(wiimote_motion_plus_read(0x52, 0xf6, 4, out, &error) && error == 0);
+    assert(out[0] == 0x00 && out[2] == 0x00 && out[3] == 0x00); /* Nunchuk ID bytes 4, 0, 5 */
     wiimote_nunchuk_set_attached(false);
+    assert(wiimote_motion_plus_read(0x52, 0x40, 16, out, &error) && out[14] == 0 && out[15] == 0);
     for (int i = 0; i < 2; ++i) {
         wiimote_reports_send_data(0x37);
         assert((received[15 + 5] & 0x02) && !(received[15 + 4] & 0x01));

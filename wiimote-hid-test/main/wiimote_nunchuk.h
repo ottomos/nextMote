@@ -39,6 +39,10 @@ bool wiimote_nunchuk_read(uint8_t slave, uint16_t address, uint8_t length,
 bool wiimote_nunchuk_write(uint8_t slave, uint16_t address, const uint8_t *data,
                            uint8_t count, uint8_t *error);
 
+/* Plaintext ID (6 bytes from 0xfa) and calibration (16 bytes from 0x20) as a
+ * MotionPlus reads them from its passthrough port. Returns false if detached. */
+bool wiimote_nunchuk_passthrough_info(uint8_t id[6], uint8_t calibration[16]);
+
 /* Report bytes as streamed from register 0x00 (encrypted when the host enabled it). */
 void wiimote_nunchuk_encode(uint8_t *output, uint8_t length);
 

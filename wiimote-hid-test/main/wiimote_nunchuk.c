@@ -178,6 +178,19 @@ static void copy_out_locked(uint16_t address, uint8_t length, uint8_t *output)
     }
 }
 
+bool wiimote_nunchuk_passthrough_info(uint8_t id[6], uint8_t calibration[16])
+{
+    portENTER_CRITICAL(&s_mux);
+    ensure_initialized_locked();
+    const bool attached = s_attached;
+    if (attached) {
+        memcpy(id, &s_regs[NC_REG_ID], 6);
+        memcpy(calibration, &s_regs[NC_REG_CALIBRATION], NC_CALIBRATION_LEN);
+    }
+    portEXIT_CRITICAL(&s_mux);
+    return attached;
+}
+
 bool wiimote_nunchuk_read(uint8_t slave, uint16_t address, uint8_t length,
                           uint8_t *output, uint8_t *error)
 {
