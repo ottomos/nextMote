@@ -115,6 +115,49 @@ The firmware does **not** yet provide:
 
 Games requiring unimplemented extensions or unvalidated MotionPlus behavior may not work. The observed FIFA 15 prompt explicitly mentions the Nunchuk stick, so that title is expected to require Nunchuk-compatible extension reports; changing core button masks or sending A alone cannot satisfy that requirement. Even a button-only title may require additional wiimote initialization/report handling beyond pairing and a button report.
 
+## Physical buttons: one Funduino joystick shield
+
+Branch `nxt16-physical-buttons` adds **six digital buttons**, matching the web controller's Up, Right, Down, Left, A and B inputs. The joystick axes and joystick click are unused; 1/2/Plus/Minus/Home remain available on the web page. Physical input is **off by default**. On 9 November 2026, the user wired shield F/E for Wii A/B, confirmed PHY A press/release feedback and reported the physical buttons working in Mario Kart Wii in Dolphin. Direction inputs, individual B/combination coverage and physical-button vWii operation remain unverified.
+
+The [Robotistan shield reference](https://www.robotistan.com/joystick-shield-for-arduino) lists six buttons A-F on D2-D7 and a 3.3 V/5 V selector. Match these labels against your actual board; do not use the inconsistent dual-joystick listing as a wiring reference.
+
+### Wiring (power off first)
+
+**Current prototype hardware:** one Funduino shield, with its 3.3 V/5 V lever set to **3.3 V**. This is the temporary cabling plan until the custom button hardware is designed; it is not a final custom-PCB pinout.
+
+Use jumper wires, not the Arduino shield stacking headers directly on the ESP32. Set the shield selector to **3.3 V**, use a common GND and supply the appropriate shield power input from ESP32 3V3. Confirm that the shield's button signals stay within 0-3.3 V before attaching them to ESP32 inputs. **Never connect a 5 V button signal to the ESP32.** Leave any 5 V rail unconnected.
+
+| Shield button / signal | Wii/web control | ESP32 GPIO |
+|---|---|---|
+| A / D2 (top direction) | Up | 32 |
+| B / D3 (right direction) | Right | 33 |
+| C / D4 (bottom direction) | Down | 25 |
+| D / D5 (left direction) | Left | 14 |
+| F / D7 (small button) | A | 23 |
+| E / D6 (small button) | B | 19 |
+
+Shield D2 is **not** ESP32 GPIO2. Verify the actual top/right/bottom/left button labels; if your revision differs, adjust the signal wires to preserve the direction-to-control mapping. Leave AN0, AN1 and D8/KEY unconnected. These six ESP32 inputs use internal pull-ups: released is HIGH and pressed is LOW. Existing sensor and USB serial wiring stays unchanged.
+
+### Enable and test
+
+With ESP-IDF activated, build from this project directory:
+
+```bash
+idf.py -B build/mplus -DNEXTMOTE_ENABLE_MOTION_PLUS=1 -DNEXTMOTE_ENABLE_PHYSICAL_BUTTONS=1 build
+```
+
+The physical-button flag is independent of MotionPlus. After wiring is verified, flash that build using the usual serial port. CMake remembers the flag in the build directory; explicitly set `-DNEXTMOTE_ENABLE_PHYSICAL_BUTTONS=0` and rebuild to disable it.
+
+Inputs are sampled about every 10 ms and must stay stable for 30 ms to change state. Simultaneous buttons are supported. Physical and virtual masks are OR-combined: releasing a web button cannot release the same button while physically held, or vice versa. Physical input remains available without Wi-Fi; setup mode does not start the GPIO task. The automatic fake-button demo must be disabled when this feature is enabled.
+
+First bench test: check the startup line `Shield buttons enabled: Up=32 Right=33 Down=25 Left=14 A=23 B=19`, then press/release every button while watching `Physical mask=...` serial messages. Expected individual masks: Up `0x0800`, Right `0x0200`, Down `0x0400`, Left `0x0100`, A `0x0008`, B `0x0004`; released `0x0000`. Then verify these inputs through the host/game, simultaneous A+B and a direction+A, and mixed physical/web holds. A serial mask alone is not proof of host receipt. The web button highlighting is not a physical-input monitor.
+
+The web app has a separate physical-input line: **PHY Pressed A**, **PHY Released A**, etc., independent of Bluetooth connection. It polls status about once per second; transition counters let it show both press and release if a tap happens between polls. This is a diagnostic summary, not a timestamped event log: repeated transitions may be grouped and ordering across buttons is not preserved. The last summary stays visible. Web-click feedback remains separate and physical presses do not highlight the virtual buttons.
+
+Physical and web controls feed the **same Wii Remote button state and HID report interface**; there is no separate game-facing physical-button protocol. The Mario Kart Wii result confirms the physical-input path in the tested Dolphin setup. Platform labels in the test records describe where testing occurred, not different button implementations.
+
+Validation: host tests cover debounce and release bounce, timer wraparound, all 64 combinations, mixed-source holds/releases and reconnect state. ESP-IDF 6.0.1 builds with physical buttons enabled. The first hardware flash lost communication twice; with the shield disconnected, a complete 115200-baud flash succeeded and verified its hash. After reconnection, the user confirmed PHY A press/release and a Mario Kart Wii result in Dolphin. This is a limited user-reported result, not full six-button or real-console certification.
+
 ## Wi-Fi setup mode
 
 On a factory-fresh board (no network stored in NVS) nextMote starts in **Wi-Fi setup mode**. In this mode only the setup network and page run: Bluetooth, the IMU and the camera are **not** started.

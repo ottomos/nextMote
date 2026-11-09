@@ -6,6 +6,8 @@
 idf_component_register(SRCS
                     "wiimote_app.c"
                     "wiimote_state.c"
+                    "wiimote_button_input.c"
+                    "wiimote_physical_buttons.c"
                     "wiimote_reports.c"
                     "wiimote_accel.c"
                     "wiimote_commands.c"
@@ -33,6 +35,9 @@ idf_component_register(SRCS
                     INCLUDE_DIRS ".")
 
 option(WIIMOTE_DIAGNOSTIC_GIAC_ONLY "Hold GIAC during Limited SYNC for a bounded timing probe" OFF)
+option(NEXTMOTE_ENABLE_PHYSICAL_BUTTONS "Enable six Funduino shield digital buttons" OFF)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+                           NEXTMOTE_ENABLE_PHYSICAL_BUTTONS=$<BOOL:${NEXTMOTE_ENABLE_PHYSICAL_BUTTONS}>)
 option(WIIMOTE_UPSTREAM_DISCOVERY_BASELINE "Use upstream-style continuous General discovery when idle" OFF)
 option(WIIMOTE_DIAGNOSTIC_RADIO_ONLY "Disable Wi-Fi startup for a bounded upstream radio comparison" OFF)
 if(WIIMOTE_DIAGNOSTIC_RADIO_ONLY AND NOT WIIMOTE_UPSTREAM_DISCOVERY_BASELINE)

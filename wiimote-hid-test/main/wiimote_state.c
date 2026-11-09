@@ -7,13 +7,23 @@
 #include "freertos/portmacro.h"
 
 static wiimote_state_snapshot_t s_state;
+static uint16_t s_virtual_button_mask;
+static uint16_t s_physical_button_mask;
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void update_buttons_locked(void)
+{
+    const uint16_t mask = s_virtual_button_mask | s_physical_button_mask;
+    s_state.buttons[0] = (uint8_t)(mask >> 8);
+    s_state.buttons[1] = (uint8_t)mask;
+}
 
 void wiimote_state_open(void)
 {
     portENTER_CRITICAL(&s_state_mux);
     s_state.connected = true;
-    memset(s_state.buttons, 0, sizeof(s_state.buttons));
+    s_virtual_button_mask = 0;
+    update_buttons_locked();
     s_state.report_mode = WIIMOTE_REPORT_BUTTONS;
     s_state.continuous_reporting = false;
     s_state.ir_logic_enabled = false;
@@ -25,7 +35,8 @@ void wiimote_state_close(void)
 {
     portENTER_CRITICAL(&s_state_mux);
     s_state.connected = false;
-    memset(s_state.buttons, 0, sizeof(s_state.buttons));
+    s_virtual_button_mask = 0;
+    update_buttons_locked();
     s_state.ir_logic_enabled = false;
     s_state.ir_sensor_enabled = false;
     portEXIT_CRITICAL(&s_state_mux);
@@ -50,8 +61,19 @@ bool wiimote_state_ir_enabled(void)
 bool wiimote_state_set_button_mask(uint16_t button_mask)
 {
     portENTER_CRITICAL(&s_state_mux);
-    s_state.buttons[0] = (uint8_t)(button_mask >> 8);
-    s_state.buttons[1] = (uint8_t)button_mask;
+    s_virtual_button_mask = button_mask;
+    update_buttons_locked();
+    bool send_now = s_state.connected &&
+                    wiimote_protocol_is_data_report(s_state.report_mode);
+    portEXIT_CRITICAL(&s_state_mux);
+    return send_now;
+}
+
+bool wiimote_state_set_physical_button_mask(uint16_t button_mask)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_physical_button_mask = button_mask;
+    update_buttons_locked();
     bool send_now = s_state.connected &&
                     wiimote_protocol_is_data_report(s_state.report_mode);
     portEXIT_CRITICAL(&s_state_mux);
@@ -61,8 +83,8 @@ bool wiimote_state_set_button_mask(uint16_t button_mask)
 void wiimote_state_set_button_bytes(uint8_t first, uint8_t second)
 {
     portENTER_CRITICAL(&s_state_mux);
-    s_state.buttons[0] = first;
-    s_state.buttons[1] = second;
+    s_virtual_button_mask = ((uint16_t)first << 8) | second;
+    update_buttons_locked();
     portEXIT_CRITICAL(&s_state_mux);
 }
 
