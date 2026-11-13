@@ -158,6 +158,27 @@ Physical and web controls feed the **same Wii Remote button state and HID report
 
 Validation: host tests cover debounce and release bounce, timer wraparound, all 64 combinations, mixed-source holds/releases and reconnect state. ESP-IDF 6.0.1 builds with physical buttons enabled. The first hardware flash lost communication twice; with the shield disconnected, a complete 115200-baud flash succeeded and verified its hash. After reconnection, the user confirmed PHY A press/release and a Mario Kart Wii result in Dolphin. This is a limited user-reported result, not full six-button or real-console certification.
 
+## Real Nunchuk adapter input
+
+The web Nunchuk panel now has two mutually exclusive input tabs:
+
+- **Simulator** keeps the existing web stick and C/Z controls.
+- **Real Nunchuk** displays the adapter's detected/initialized state, live joystick and accelerometer readings, C/Z states, raw bytes, sample/error counters, the measured read-error percentage and the last I2C error/stage. Selecting it feeds the physical readings into the existing emulated Nunchuk that the host sees. The shared **Connect/Disconnect Nunchuk** control still determines whether the host sees the extension. The Simulator is the default source.
+
+The Simulator sends web stick and C/Z values only; its emulated accelerometer stays at the fixed neutral reading (512, 512, 716). It does not send live acceleration from the BNO08x. The Real Nunchuk source sends the adapter's measured acceleration values instead.
+
+The Adafruit adapter is detected at I2C address `0x52` and shares the existing sensor bus on GPIO21 (SDA) / GPIO22 (SCL). Access uses the shared bus mutex and has its own lock-timing category in `/api/i2c`. The service initializes the Nunchuk's plaintext mode and polls at 50 Hz; it reads eight bytes like Adafruit's library and decodes the first six into stick, 10-bit acceleration and active-low C/Z input. The post-register delay is a real 2 ms microsecond delay (not FreeRTOS ticks, since this build's tick is 100 Hz). Up to two retries are made after an I2C NACK, with a 5 ms delay between attempts. The Real tab reports failed samples separately from recovered transaction errors so the displayed error rate does not hide retries. Host-facing extension registers and encryption remain handled by `wiimote_nunchuk.c`. Per-unit calibration bytes are not yet read or forwarded.
+
+The web tab can be used to see whether the adapter is detected before attaching the extension. If it is absent, the Simulator remains usable and the Real tab explains the missing device. Switching back to Simulator stops physical samples from overriding web controls. Host decode/tab tests and ESP-IDF build pass.
+
+### Nunchuk-only adapter test (13 November 2026)
+
+With only the Adafruit adapter/Nunchuk connected (VIN=3V3, 3V open, GND, SDA=GPIO21, SCL=GPIO22), the user tested the Real Nunchuk tab. Serial reported `Nunchuk adapter ready at I2C 0x52`. In a controlled 30-second window at 50 Hz, `/api/nunchuk` advanced from 5,474 to 6,974 samples: **1,500 successful samples, zero failed samples (0.00%) and zero underlying I2C NACKs**. `/api/bus` reported zero Nunchuk mutex timeouts. This meets the requested <2% threshold for the isolated adapter test.
+
+Camera and BNO08x were disconnected during this test, so shared-bus behavior with either sensor active remains unverified. The test confirms sensor reads and web display, not physical Nunchuk input received by a game; host/game testing is still pending. The driver sends physical acceleration with the emulator's existing synthetic calibration; per-unit calibration is not read/forwarded, so verify accelerometer behavior separately.
+
+For the next test, reconnect the BNO08x (power off before wiring), leave the Nunchuk on the shared bus, then compare `/api/nunchuk` counters and `/api/bus` lock timing during another sustained Real Nunchuk sample window.
+
 ## Wi-Fi setup mode
 
 On a factory-fresh board (no network stored in NVS) nextMote starts in **Wi-Fi setup mode**. In this mode only the setup network and page run: Bluetooth, the IMU and the camera are **not** started.

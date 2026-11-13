@@ -9,6 +9,7 @@
 typedef enum {
     SENSOR_I2C_USER_CAMERA = 0,
     SENSOR_I2C_USER_IMU,
+    SENSOR_I2C_USER_NUNCHUK,
     SENSOR_I2C_USER_OTHER,
     SENSOR_I2C_USER_COUNT,
 } sensor_i2c_user_t;

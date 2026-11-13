@@ -14,6 +14,8 @@ idf_component_register(SRCS
                     "wiimote_memory.c"
                     "wiimote_motion_plus.c"
                     "wiimote_nunchuk.c"
+                    "nunchuk_adapter_protocol.c"
+                    "nunchuk_adapter_service.c"
                     "wiimote_controls.c"
                     "wiimote_protocol.c"
                     "wiimote_descriptor.c"
@@ -31,7 +33,7 @@ idf_component_register(SRCS
                     "ir_camera.c"
                     "ir_camera_service.c"
                     "imu_service.c"
-                    PRIV_REQUIRES bno085 bt esp_coex esp_driver_uart lwip esp_http_server esp_netif esp_wifi esp_timer esp_driver_gpio esp_driver_i2c nvs_flash
+                    PRIV_REQUIRES bno085 bt esp_coex esp_driver_uart esp_rom lwip esp_http_server esp_netif esp_wifi esp_timer esp_driver_gpio esp_driver_i2c nvs_flash
                     INCLUDE_DIRS ".")
 
 option(WIIMOTE_DIAGNOSTIC_GIAC_ONLY "Hold GIAC during Limited SYNC for a bounded timing probe" OFF)

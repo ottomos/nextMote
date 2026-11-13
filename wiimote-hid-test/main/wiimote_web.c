@@ -26,6 +26,7 @@
 #include "wiimote_physical_buttons.h"
 #include "wiimote_motion_plus.h"
 #include "wiimote_nunchuk.h"
+#include "nunchuk_adapter_service.h"
 #include "wiimote_reports.h"
 #if CONFIG_EXAMPLE_BT_DISCOVERY_TRACE
 #include "esp_bt_main.h"
@@ -139,6 +140,14 @@ static const char INDEX_HTML[] =
 ".nunchuk-panel{margin:18px auto;padding:18px;background:#161e2d;border:1px solid #35415a;"
     "border-radius:22px;text-align:center}.nunchuk-panel h2{margin:0}"
     "#nc-status{color:#8fa0bf;margin:8px 0;min-height:1.5em}"
+".nc-tabs{display:flex;justify-content:center;gap:8px;margin:12px auto;width:min(420px,100%)}"
+".nc-tab{padding:9px 16px;border:1px solid #46516a;border-radius:12px;background:#263650;"
+"font-size:14px}.nc-tab[aria-selected='true']{background:#13a89e}"
+".nunchuk-panel [hidden]{display:none!important}"
+"#nc-real-status{color:#aab7cf;min-height:1.5em}"
+".nc-data{width:min(520px,100%);margin:12px auto;border-collapse:collapse;text-align:left}"
+".nc-data th,.nc-data td{border:1px solid #46516a;padding:8px}"
+".nc-data td:last-child{font-family:ui-monospace,monospace;text-align:right;overflow-wrap:anywhere}"
     "#nc-toggle{min-height:52px;padding:0 22px;background:#66728a}#nc-toggle.on{background:#13a89e}"
     ".nc-layout{display:flex;gap:28px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:14px}"
     "#nc-pad{width:170px;height:170px;border-radius:50%;background:#263650;position:relative;"
@@ -171,12 +180,30 @@ static const char INDEX_HTML[] =
     "<div class='combo-row'><button class='combo' data-button='AB'>A + B</button>"
     "<button class='combo' data-button='ONE_TWO'>1 + 2</button></div>"
     "</section>"
-    "<section class='nunchuk-panel off' id='nc-panel' aria-label='Web Nunchuk'>"
-    "<h2>Nunchuk · web</h2><p id='nc-status'>Loading Nunchuk state…</p>"
+    "<section class='nunchuk-panel off' id='nc-panel' aria-label='Nunchuk input'>"
+    "<h2>Nunchuk</h2><p id='nc-status'>Loading Nunchuk state…</p>"
     "<button id='nc-toggle' type='button'>Connect Nunchuk</button>"
+    "<div class='nc-tabs' role='tablist' aria-label='Nunchuk input source'>"
+    "<button id='nc-simulator-tab' class='nc-tab' type='button' role='tab' "
+    "aria-selected='true' aria-controls='nc-simulator-view'>Simulator</button>"
+    "<button id='nc-real-tab' class='nc-tab' type='button' role='tab' "
+    "aria-selected='false' aria-controls='nc-real-view'>Real Nunchuk</button></div>"
+    "<div id='nc-simulator-view' role='tabpanel' aria-labelledby='nc-simulator-tab'>"
     "<div class='nc-layout'><div id='nc-pad' role='slider' aria-label='Nunchuk stick'>"
     "<div id='nc-knob'></div></div><div class='nc-buttons'>"
-    "<button data-nc='c'>C</button><button data-nc='z'>Z</button></div></div></section>"
+    "<button data-nc='c'>C</button><button data-nc='z'>Z</button></div></div></div>"
+    "<div id='nc-real-view' role='tabpanel' aria-labelledby='nc-real-tab' hidden>"
+    "<p id='nc-real-status'>Checking for an adapter at I2C 0x52…</p>"
+    "<table class='nc-data'><thead><tr><th>Input</th><th>Live data</th></tr></thead><tbody>"
+    "<tr><td>Joystick X / Y</td><td id='nc-real-stick'>-</td></tr>"
+    "<tr><td>Acceleration X / Y / Z</td><td id='nc-real-accel'>-</td></tr>"
+    "<tr><td>Buttons C / Z</td><td id='nc-real-buttons'>-</td></tr>"
+    "<tr><td>Raw bytes</td><td id='nc-real-raw'>-</td></tr>"
+    "<tr><td>Samples / failed samples</td><td id='nc-real-counts'>-</td></tr>"
+    "<tr><td>Read error rate</td><td id='nc-real-rate'>-</td></tr>"
+    "<tr><td>I2C attempt errors (incl. retries)</td><td id='nc-real-attempt-errors'>-</td></tr>"
+    "<tr><td>Last I2C error</td><td id='nc-real-error'>-</td></tr>"
+    "</tbody></table></div></section>"
     "<section class='camera-panel' aria-label='IR camera view'>"
     "<h2>IR camera · SEN0158</h2><p id='camera-status'>Waiting for camera data…</p>"
     "<div id='camera-tracker' role='img' aria-label='Live IR point plot'></div>"
@@ -362,21 +389,60 @@ static const char INDEX_HTML[] =
     "pollSensors();setInterval(pollSensors,200);"
     "const ncPanel=document.querySelector('#nc-panel'),ncStatus=document.querySelector('#nc-status');"
     "const ncToggle=document.querySelector('#nc-toggle'),ncPad=document.querySelector('#nc-pad');"
-    "const ncKnob=document.querySelector('#nc-knob');let ncAttached=false,ncDirty=false,ncBusy=false;"
+    "const ncKnob=document.querySelector('#nc-knob');"
+    "const ncSimulatorTab=document.querySelector('#nc-simulator-tab'),ncRealTab=document.querySelector('#nc-real-tab');"
+    "const ncSimulatorView=document.querySelector('#nc-simulator-view'),ncRealView=document.querySelector('#nc-real-view');"
+    "let ncAttached=false,ncDirty=false,ncBusy=false,ncSource='simulator',ncRequests=0;"
+    "let ncQueue=Promise.resolve();"
     "const nc={sx:128,sy:128,c:0,z:0};"
-    "function ncShow(d){ncAttached=d.attached;ncPanel.classList.toggle('off',!d.attached);"
+    "function ncSetSourceView(source){ncSource=source;const physical=source==='physical';"
+    "ncSimulatorTab.setAttribute('aria-selected',physical?'false':'true');"
+    "ncRealTab.setAttribute('aria-selected',physical?'true':'false');"
+    "ncSimulatorView.hidden=physical;ncRealView.hidden=!physical}"
+    "function ncShow(d){ncAttached=d.attached;ncSetSourceView(d.source==='physical'?'physical':'simulator');"
+    "ncPanel.classList.toggle('off',!d.attached);"
     "ncToggle.classList.toggle('on',d.attached);ncToggle.textContent=d.attached?'Disconnect Nunchuk':'Connect Nunchuk';"
-    "ncStatus.textContent=(d.attached?'Connected':'Disconnected')+' · stick '+d.stick.join(', ')+"
+    "ncStatus.textContent=(d.source==='physical'?'Real Nunchuk':'Simulator')+' · '+"
+    "(d.attached?'Connected':'Disconnected')+' · stick '+d.stick.join(', ')+"
     "(d.c?' · C':'')+(d.z?' · Z':'')+(d.encrypted?(d.unsupported_key?"
     "' · encryption key unsupported':' · encrypted'):'')+(d.attached&&d.motion_plus_active?"
-    "(d.mp_mode===5?' · via MotionPlus passthrough':' · behind MotionPlus (not passthrough)'):'')}"
-    "async function ncPost(body){const r=await fetch('/api/nunchuk',{method:'POST',"
+    "(d.mp_mode===5?' · via MotionPlus passthrough':' · behind MotionPlus (not passthrough)'):'');"
+    "const detected=d.adapter_detected,ready=d.adapter_initialized;"
+    "document.querySelector('#nc-real-status').textContent=!detected?"
+    "'No adapter detected at 0x52. Check VIN, GND, SDA and SCL.':!ready?"
+    "'Adapter detected; initializing…':d.error!=='ESP_OK'?"
+    "'Adapter ready with a read warning: '+d.error:'Adapter ready · live inputs feed the game when connected';"
+    "document.querySelector('#nc-real-stick').textContent=ready?d.stick.join(' / '):'-';"
+    "document.querySelector('#nc-real-accel').textContent=ready?d.accel.join(' / '):'-';"
+    "document.querySelector('#nc-real-buttons').textContent=ready?"
+    "('C '+(d.c?'pressed':'released')+' / Z '+(d.z?'pressed':'released')):'-';"
+    "document.querySelector('#nc-real-raw').textContent=ready?"
+    "d.raw.map(v=>v.toString(16).padStart(2,'0')).join(' '):'-';"
+    "document.querySelector('#nc-real-counts').textContent=d.samples+' / '+d.read_failures;"
+    "const attempts=d.samples+d.read_failures;"
+    "document.querySelector('#nc-real-rate').textContent=attempts?"
+    "(100*d.read_failures/attempts).toFixed(2)+'%':'-';"
+    "document.querySelector('#nc-real-attempt-errors').textContent=d.read_attempt_errors;"
+    "document.querySelector('#nc-real-error').textContent=d.last_read_error+' · '+d.last_read_stage}"
+    "function ncPost(body){ncRequests++;const request=ncQueue.then(async()=>{"
+    "const r=await fetch('/api/nunchuk',{method:'POST',"
     "headers:{'Content-Type':'application/x-www-form-urlencoded'},body});"
-    "if(!r.ok)throw Error(await r.text());ncShow(await r.json())}"
+    "if(!r.ok)throw Error(await r.text());const data=await r.json();ncShow(data);return data});"
+    "ncQueue=request.catch(()=>{});return request.finally(()=>{ncRequests--})}"
+    "async function ncSelectSource(source){if(source===ncSource)return;const previous=ncSource;"
+    "ncSetSourceView(source);"
+    "if(source==='simulator'){nc.sx=128;nc.sy=128;nc.c=0;nc.z=0;"
+    "ncKnob.style.left='50%';ncKnob.style.top='50%'}"
+    "const body=source==='physical'?'source=physical':"
+    "'source=simulator&sx='+nc.sx+'&sy='+nc.sy+'&c='+nc.c+'&z='+nc.z;"
+    "try{await ncPost(body)}catch(e){ncSetSourceView(previous);ncStatus.textContent='Nunchuk source error: '+e.message}}"
+    "ncSimulatorTab.addEventListener('click',()=>ncSelectSource('simulator'));"
+    "ncRealTab.addEventListener('click',()=>ncSelectSource('physical'));"
     "async function ncFlush(){if(ncBusy)return;ncBusy=true;try{while(ncDirty){ncDirty=false;"
+    "if(ncSource==='physical')continue;"
     "await ncPost('sx='+nc.sx+'&sy='+nc.sy+'&c='+nc.c+'&z='+nc.z)}}"
     "catch(e){ncStatus.textContent='Nunchuk error: '+e.message}finally{ncBusy=false}}"
-    "function ncSend(){ncDirty=true;ncFlush()}"
+    "function ncSend(){if(ncSource==='physical')return;ncDirty=true;ncFlush()}"
     "ncToggle.addEventListener('click',()=>ncPost('attached='+(ncAttached?0:1)).catch(e=>"
     "ncStatus.textContent='Nunchuk error: '+e.message));"
     "function ncStick(e){const r=ncPad.getBoundingClientRect(),rad=r.width/2;"
@@ -393,8 +459,8 @@ static const char INDEX_HTML[] =
     "for(const ev of ['pointerup','pointercancel'])b.addEventListener(ev,()=>{"
     "if(!nc[k])return;b.classList.remove('pressed');nc[k]=0;ncSend()});"
     "b.addEventListener('contextmenu',e=>e.preventDefault())});"
-    "async function ncRefresh(){if(document.hidden||ncBusy)return;try{const r=await fetch('/api/nunchuk',"
-    "{cache:'no-store'});if(r.ok)ncShow(await r.json())}catch(e){}}ncRefresh();setInterval(ncRefresh,2000);"
+    "async function ncRefresh(){if(document.hidden||ncBusy||ncRequests)return;try{const r=await fetch('/api/nunchuk',"
+    "{cache:'no-store'});if(r.ok)ncShow(await r.json())}catch(e){}}ncRefresh();setInterval(ncRefresh,250);"
     "document.querySelector('#wifi-setup-button').onclick=async()=>{"
     "if(!confirm('Restart nextMote into Wi-Fi setup mode? Bluetooth stops until setup is finished or the device is reset.'))return;"
     "const n=document.querySelector('#wifi-setup-note');try{const r=await fetch('/api/wifi/setup',{method:'POST'});"
@@ -586,7 +652,7 @@ static esp_err_t bus_handler(httpd_req_t *req)
     sensor_i2c_bus_get_stats(&stats);
     if (reset) sensor_i2c_bus_reset_stats();
 
-    static const char *const names[SENSOR_I2C_USER_COUNT] = {"camera", "imu", "other"};
+    static const char *const names[SENSOR_I2C_USER_COUNT] = {"camera", "imu", "nunchuk", "other"};
     char response[1024];
     size_t used = 0;
     int length = snprintf(response, sizeof(response), "{\"window_ms\":%lld,\"reset\":%s",
@@ -699,17 +765,41 @@ static esp_err_t button_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+static const char *nunchuk_read_stage_name(nunchuk_read_stage_t stage)
+{
+    switch (stage) {
+    case NUNCHUK_READ_STAGE_REGISTER_SELECT: return "register_select";
+    case NUNCHUK_READ_STAGE_DATA_READ: return "data_read";
+    case NUNCHUK_READ_STAGE_NONE:
+    default: return "none";
+    }
+}
+
 static esp_err_t send_nunchuk_state(httpd_req_t *req)
 {
     wiimote_nunchuk_status_t status;
     wiimote_nunchuk_get_status(&status);
-    char response[256];
+    nunchuk_adapter_status_t adapter;
+    nunchuk_adapter_service_get_status(&adapter);
+    const char *source = adapter.source == NUNCHUK_INPUT_SOURCE_ADAPTER
+                             ? "physical" : "simulator";
+    const uint64_t attempts = (uint64_t)adapter.samples + adapter.read_failures;
+    const uint32_t read_error_rate_bp = attempts
+        ? (uint32_t)(((uint64_t)adapter.read_failures * 10000U) / attempts) : 0;
+    char response[640];
     int length = snprintf(response, sizeof(response),
-                          "{\"attached\":%s,\"source\":\"web\",\"stick\":[%u,%u],"
+                          "{\"attached\":%s,\"source\":\"%s\",\"stick\":[%u,%u],"
                           "\"accel\":[%u,%u,%u],\"c\":%s,\"z\":%s,\"encrypted\":%s,"
                           "\"unsupported_key\":%s,\"encryption_enables\":%lu,"
-                          "\"motion_plus_active\":%s,\"mp_mode\":%u}",
+                          "\"motion_plus_active\":%s,\"mp_mode\":%u,"
+                          "\"adapter_detected\":%s,\"adapter_initialized\":%s,"
+                          "\"samples\":%lu,\"read_failures\":%lu,\"read_error_rate_bp\":%lu,"
+                          "\"read_attempt_errors\":%lu,"
+                          "\"error\":\"%s\",\"last_read_error\":\"%s\","
+                          "\"last_read_stage\":\"%s\","
+                          "\"raw\":[%u,%u,%u,%u,%u,%u,%u,%u]}",
                           status.attached ? "true" : "false",
+                          source,
                           status.input.stick_x, status.input.stick_y,
                           status.input.accel[0], status.input.accel[1], status.input.accel[2],
                           status.input.c ? "true" : "false", status.input.z ? "true" : "false",
@@ -717,7 +807,19 @@ static esp_err_t send_nunchuk_state(httpd_req_t *req)
                           status.unsupported_key ? "true" : "false",
                           (unsigned long)status.encryption_enables,
                           wiimote_motion_plus_is_active() ? "true" : "false",
-                          wiimote_motion_plus_mode());
+                          wiimote_motion_plus_mode(),
+                          adapter.detected ? "true" : "false",
+                          adapter.initialized ? "true" : "false",
+                          (unsigned long)adapter.samples,
+                          (unsigned long)adapter.read_failures,
+                          (unsigned long)read_error_rate_bp,
+                          (unsigned long)adapter.read_attempt_errors,
+                          esp_err_to_name(adapter.last_error),
+                          esp_err_to_name(adapter.last_read_error),
+                          nunchuk_read_stage_name(adapter.last_read_stage),
+                          adapter.raw[0], adapter.raw[1], adapter.raw[2],
+                          adapter.raw[3], adapter.raw[4], adapter.raw[5],
+                          adapter.raw[6], adapter.raw[7]);
     if (length < 0 || (size_t)length >= sizeof(response)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "nunchuk response formatting failed");
@@ -749,7 +851,7 @@ static bool parse_byte(const char *text, uint8_t *value)
     return true;
 }
 
-/* Form fields (all optional): attached=0|1, sx/sy=0..255, c=0|1, z=0|1. */
+/* Form fields: attached=0|1, source=simulator|physical, sx/sy=0..255, c/z=0|1. */
 static esp_err_t nunchuk_post_handler(httpd_req_t *req)
 {
     if (req->content_len == 0 || req->content_len > MAX_HTTP_BODY) {
@@ -770,9 +872,20 @@ static esp_err_t nunchuk_post_handler(httpd_req_t *req)
 
     wiimote_nunchuk_status_t status;
     wiimote_nunchuk_get_status(&status);
-    wiimote_nunchuk_input_t input = status.input;
+    nunchuk_adapter_status_t adapter;
+    nunchuk_adapter_service_get_status(&adapter);
+    const nunchuk_input_source_t current_source = adapter.source;
+    nunchuk_input_source_t requested_source = current_source;
+    uint8_t stick_x = current_source == NUNCHUK_INPUT_SOURCE_SIMULATOR
+                          ? status.input.stick_x : WIIMOTE_NUNCHUK_STICK_CENTER;
+    uint8_t stick_y = current_source == NUNCHUK_INPUT_SOURCE_SIMULATOR
+                          ? status.input.stick_y : WIIMOTE_NUNCHUK_STICK_CENTER;
+    bool c = current_source == NUNCHUK_INPUT_SOURCE_SIMULATOR && status.input.c;
+    bool z = current_source == NUNCHUK_INPUT_SOURCE_SIMULATOR && status.input.z;
     bool attached = status.attached;
     bool have_attached = false;
+    bool have_source = false;
+    bool have_simulator_input = false;
     char *save = NULL;
     for (char *token = strtok_r(body, "&", &save); token != NULL;
          token = strtok_r(NULL, "&", &save)) {
@@ -780,14 +893,30 @@ static esp_err_t nunchuk_post_handler(httpd_req_t *req)
         if (strncmp(token, "attached=", 9) == 0) {
             ok = parse_flag(token + 9, &attached);
             have_attached = ok;
+        } else if (strncmp(token, "source=", 7) == 0) {
+            const char *value = token + 7;
+            if (strcmp(value, "simulator") == 0) {
+                requested_source = NUNCHUK_INPUT_SOURCE_SIMULATOR;
+                ok = true;
+            } else if (strcmp(value, "physical") == 0) {
+                requested_source = NUNCHUK_INPUT_SOURCE_ADAPTER;
+                ok = true;
+            } else {
+                ok = false;
+            }
+            have_source = ok;
         } else if (strncmp(token, "sx=", 3) == 0) {
-            ok = parse_byte(token + 3, &input.stick_x);
+            ok = parse_byte(token + 3, &stick_x);
+            have_simulator_input = ok;
         } else if (strncmp(token, "sy=", 3) == 0) {
-            ok = parse_byte(token + 3, &input.stick_y);
+            ok = parse_byte(token + 3, &stick_y);
+            have_simulator_input = ok;
         } else if (strncmp(token, "c=", 2) == 0) {
-            ok = parse_flag(token + 2, &input.c);
+            ok = parse_flag(token + 2, &c);
+            have_simulator_input = ok;
         } else if (strncmp(token, "z=", 2) == 0) {
-            ok = parse_flag(token + 2, &input.z);
+            ok = parse_flag(token + 2, &z);
+            have_simulator_input = ok;
         } else {
             ok = false;
         }
@@ -796,7 +925,30 @@ static esp_err_t nunchuk_post_handler(httpd_req_t *req)
             return ESP_FAIL;
         }
     }
-    wiimote_nunchuk_set_input(&input);
+
+    const nunchuk_input_source_t target_source = have_source ? requested_source : current_source;
+    if (target_source == NUNCHUK_INPUT_SOURCE_ADAPTER && have_simulator_input) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "Simulator controls are unavailable while Real Nunchuk is selected");
+    }
+    if (have_source) {
+        esp_err_t err = nunchuk_adapter_service_set_source(requested_source);
+        if (err != ESP_OK) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, esp_err_to_name(err));
+        }
+    }
+    if (target_source == NUNCHUK_INPUT_SOURCE_SIMULATOR &&
+        (have_simulator_input || target_source != current_source)) {
+        wiimote_nunchuk_input_t input;
+        if (current_source == NUNCHUK_INPUT_SOURCE_SIMULATOR) input = status.input;
+        else wiimote_nunchuk_neutral_input(&input);
+        input.stick_x = stick_x;
+        input.stick_y = stick_y;
+        input.c = c;
+        input.z = z;
+        wiimote_nunchuk_set_input(&input);
+    }
     if (have_attached && wiimote_reports_set_nunchuk_attached(attached)) {
         ESP_LOGI(TAG, "Web Nunchuk %s", attached ? "connected" : "disconnected");
     }

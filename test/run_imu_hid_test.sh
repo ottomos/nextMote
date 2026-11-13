@@ -31,6 +31,12 @@ build_and_run -DWIIMOTE_ACCEL_X_AXIS=1 -DWIIMOTE_ACCEL_Y_AXIS=0 \
 
 "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
     -I"$root/test/host" -I"$root/wiimote-hid-test/main" \
+    "$root/test/test_nunchuk_adapter.c" \
+    "$root/wiimote-hid-test/main/nunchuk_adapter_protocol.c" -o "$binary"
+"$binary"
+
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+    -I"$root/test/host" -I"$root/wiimote-hid-test/main" \
     "$root/test/test_physical_buttons.c" \
     "$root/wiimote-hid-test/main/wiimote_button_input.c" \
     "$root/wiimote-hid-test/main/wiimote_state.c" \

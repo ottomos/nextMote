@@ -26,6 +26,7 @@
 #include "wiimote_physical_buttons.h"
 #include "nextmote_setup.h"
 #include "nextmote_wifi_config.h"
+#include "nunchuk_adapter_service.h"
 #include "wiimote_commands.h"
 #include "wiimote_controls.h"
 #include "wiimote_discovery.h"
@@ -2230,6 +2231,9 @@ void app_main(void)
 #if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
     wiimote_controls_init();
     ir_camera_service_start();
+#endif
+    ESP_ERROR_CHECK(nunchuk_adapter_service_start());
+#if CONFIG_EXAMPLE_WIFI_WEB_CONTROL
 #if WIIMOTE_DIAGNOSTIC_RADIO_ONLY
     ESP_LOGW(TAG, "RADIO-ONLY DIAGNOSTIC: Wi-Fi/web startup disabled; restore a radio-enabled build after the probe");
 #else

@@ -414,6 +414,21 @@ GPIO27 (INT, active low) ──────────────────�
 <p class="note">For an IMU-only test, leave the camera disconnected. The BNO remains wired to GPIO21/22, GPIO26, and GPIO27.</p>
 </div>
 <div class="card">
+<h3>Adafruit Wii Nunchuk Breakout Adapter — shared I2C bus</h3>
+<p>For the Adafruit Wii Nunchuck Breakout Adapter (product 4836), power it at 3.3 V to match the ESP32 logic level. It joins the existing camera/IMU bus; no separate I2C pins are needed.</p>
+<pre class="wiring-diagram">ESP32-WROOM-32                    ADAFRUIT BREAKOUT PIN            CONNECTION
+3V3  ──────────────────────────── VIN                             Power input at 3.3 V
+NOT CONNECTED ─────────────────── 3V                              Regulator output; do not feed back
+GND  ──────────────────────────── GND                             Common ground
+GPIO21 (SDA) ──────────────────── SDA                             Shared I2C data
+GPIO22 (SCL) ──────────────────── SCL                             Shared I2C clock
+                                  Wii Nunchuk connector            Align plug notch with "Notch Up!"
+
+NOT CONNECTED                     5 V                              Not used; ESP32 logic is 3.3 V</pre>
+<p class="note">Power off before wiring. The adapter provides level shifting, power regulation and 10 kΩ I2C pull-ups. Its Nunchuk address is fixed at <code>0x52</code>, distinct from the camera (<code>0x58</code>) and BNO08x (<code>0x4a</code>/<code>0x4b</code>). Leave the adapter's <code>3V</code> output unconnected. Pinout and connector orientation are based on the <a href="https://learn.adafruit.com/adafruit-wii-nunchuck-breakout-adapter/pinouts">Adafruit guide</a>; check the labels on your board before powering.</p>
+<p class="note">Nunchuk-only hardware validation (13 November 2026): with camera and BNO08x disconnected, the Real Nunchuk tab reported 1,500 successful samples and zero failed/I2C-error reads over 30 seconds at 50 Hz (0.00%). The adapter was detected at 0x52; the I2C mutex had no timeouts. This does not yet test simultaneous BNO/camera traffic, host/game input, or per-unit acceleration calibration. The Simulator tab sends web stick/C/Z but keeps acceleration neutral and fixed; Real Nunchuk supplies measured adapter acceleration. The shared Connect/Disconnect button controls host attachment. See the <a href="./wiimote-hid-test/README.md#real-nunchuk-adapter-input">adapter test notes and next BNO test</a>.</p>
+</div>
+<div class="card">
 <h3>Temporary button wiring — one Funduino shield</h3>
 <p>Add these wires alongside the sensor wiring above. Set the shield's 3.3 V/5 V lever to <strong>3.3 V</strong> before powering it. Shield D-number labels are not ESP32 GPIO numbers.</p>
 <pre class="wiring-diagram">ESP32-WROOM-32                    FUNDUINO SHIELD                 TEMPORARY
