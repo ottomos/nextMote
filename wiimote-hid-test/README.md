@@ -173,6 +173,12 @@ With a network saved, each boot connects directly to it; no setup AP is started.
 
 Read the startup line `wiimote_web: Wi-Fi connected; IP=...` in the serial monitor. From the project directory, use `idf.py -B build/mplus -p /dev/ttyUSB0 monitor` for the tested M+ build (replace the build directory/port as needed; ESP-IDF must be activated). Exit with `Ctrl+]`. Opening the monitor may reset the board and interrupt Bluetooth. `/api/status` also returns `ip` and `ssid` once you already know the address. The serial `status` command shows mode and stored network name, not the IP.
 
+Alternatively, from the firmware repository root run `./tools/nextmote-ip.sh` (or pass the port, e.g. `./tools/nextmote-ip.sh /dev/ttyUSB0`). It resets the board and prints either its DHCP URL or the setup-page URL. Requires Python 3 with pyserial; Bluetooth disconnects during the reset.
+
+To search the current local IPv4 network without resetting nextMote, use `./tools/nextmote-ip.sh --search`. An interface may be supplied when needed: `./tools/nextmote-ip.sh --search wlo1`. This makes read-only HTTP requests to the normal status or setup-status endpoint on the local subnet only; the search is limited to subnets of at most 256 addresses and requires Linux `ip` (iproute2) plus Python 3.
+
+Verified on 13 November 2026 against the active nextMote board; the helper found its current LAN address without resetting it.
+
 For a stable address, configure a DHCP reservation in your router. A `nextmote.local` hostname is not implemented.
 
 ### Re-entering setup and factory Wi-Fi reset

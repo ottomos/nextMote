@@ -95,6 +95,12 @@ On first boot with no saved Wi-Fi network, join `nextMote-Setup-XXXX` and open `
 
 **Setup mode runs only Wi-Fi provisioning: Bluetooth and sensors are off.** Later boots connect directly to the saved network. Normal-mode IP addresses are assigned by DHCP and may change; read `Wi-Fi connected; IP=...` in the serial boot log. `192.168.4.1` is only the setup-mode address.
 
+On Linux, `./tools/nextmote-ip.sh` automatically finds a single connected serial adapter, resets nextMote, and prints the current address. Pass a port explicitly when needed, e.g. `./tools/nextmote-ip.sh /dev/ttyUSB0`. It requires Python 3 with pyserial. Because it resets the board, Bluetooth disconnects briefly.
+
+To find nextMote over the active local IPv4 network without resetting it, run `./tools/nextmote-ip.sh --search`. Optionally name the network interface, e.g. `./tools/nextmote-ip.sh --search wlo1`. It checks only the bounded local subnet for nextMote's HTTP status API and uses Python 3's standard library plus Linux `ip` (iproute2); it does not scan beyond that interface's subnet.
+
+Verified on 13 November 2026: the no-reset search found the connected board on the local `192.168.68.0/24` network and printed its web URL.
+
 Use the web **Wi-Fi setup** button or serial `setup` to reconfigure without deleting the old network. Serial `forget` resets only Wi-Fi settings, not Bluetooth pairing; `normal` or another reset exits a one-shot setup session when a network is saved. An unreachable saved network does not automatically start setup mode; use serial recovery instead.
 
 **Validation (7 November 2026):** the user reports provisioning works really well. Instrumented laptop tests covered factory setup, errors/retry, saved-network boot and setup/reset triggers. The exact user browser and automatic captive-popup behavior were not specified. See the [complete initialization and recovery instructions](./wiimote-hid-test/README.md#wi-fi-setup-mode) and [power-on guide](./ASSEMBLY_GUIDE.html#initial-wifi-setup).
