@@ -20,6 +20,7 @@ void wiimote_state_close(void);
 bool wiimote_state_is_connected(void);
 bool wiimote_state_ir_enabled(void);
 bool wiimote_state_set_button_mask(uint16_t button_mask);
+bool wiimote_state_set_physical_button_mask(uint16_t button_mask);
 void wiimote_state_set_button_bytes(uint8_t first, uint8_t second);
 void wiimote_state_get_buttons(uint8_t buttons[WIIMOTE_BUTTON_PAYLOAD_LEN]);
 void wiimote_state_set_leds(uint8_t leds);

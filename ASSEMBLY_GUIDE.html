@@ -413,6 +413,27 @@ GPIO26 (RST) ──────────────────────�
 GPIO27 (INT, active low) ───────────────────────────────── INT</pre>
 <p class="note">For an IMU-only test, leave the camera disconnected. The BNO remains wired to GPIO21/22, GPIO26, and GPIO27.</p>
 </div>
+<div class="card">
+<h3>Temporary button wiring — one Funduino shield</h3>
+<p>Add these wires alongside the sensor wiring above. Set the shield's 3.3 V/5 V lever to <strong>3.3 V</strong> before powering it. Shield D-number labels are not ESP32 GPIO numbers.</p>
+<pre class="wiring-diagram">ESP32-WROOM-32                    FUNDUINO SHIELD                 TEMPORARY
+                                                                  Until custom hardware
+3V3  ──────────────────────────── shield 3.3 V supply              Lever set to 3.3 V
+GND  ──────────────────────────── GND                              Common ground
+
+GPIO32 ────────────────────────── D2 / button A (top)              Wii Up
+GPIO25 ────────────────────────── D4 / button C (bottom)           Wii Down
+GPIO33 ────────────────────────── D3 / button B (right)            Wii Right
+GPIO14 ────────────────────────── D5 / button D (left)             Wii Left
+GPIO23 ────────────────────────── D7 / button F (small)            Wii A
+GPIO19 ────────────────────────── D6 / button E (small)            Wii B
+
+NOT CONNECTED                     AN0 / AN1                        Analog joystick axes
+NOT CONNECTED                     D8 / KEY                         Joystick click
+NOT CONNECTED                     I2C / accessory connectors       Not used for buttons
+NOT CONNECTED                     5 V rail                        No 5 V to ESP32 GPIO</pre>
+<p class="note">Power off before wiring. Use the shield's appropriate supply input for 3.3 V operation, and verify its button signals are within 0–3.3 V before connecting ESP32 GPIOs. Sensor GPIO21/22/26/27 and USB serial remain unchanged. Physical input requires the enabled prototype build; hardware tests are pending. See the <a href="#physical-button-prototype">shield button / Wii control / ESP32 GPIO table</a>.</p>
+</div>
 
 <h2>7. Power-on &amp; verification</h2>
 <div class="card">
@@ -460,6 +481,27 @@ GPIO27 (INT, active low) ──────────────────�
 </p>
 
 <p class="note">For current firmware, pairing, vWii, and sensor-bar results, see the <a href="../plan.md">implementation plan</a> and <a href="./IR_CAMERA_STATUS.md">camera/IMU status</a>.</p>
+
+<section id="physical-button-prototype">
+  <h2>Optional physical buttons - one Funduino shield</h2>
+  <p>Physical and web buttons feed the <strong>same Wii Remote button state and HID report interface</strong>. The Mario Kart Wii test confirms physical input in the tested Dolphin setup; recording the platform does not imply a different button implementation for vWii.</p>
+  <p>The normal web app shows physical-input feedback prefixed <strong>PHY</strong>, for example <strong>PHY Pressed A</strong> and <strong>PHY Released A</strong>. This works without a Bluetooth connection and is separate from web-click feedback. Updates arrive about once per second; quick taps can show both transitions together. This checks device input, not whether a game received it.</p>
+  <p><strong>Current temporary cabling plan, until custom hardware:</strong> use one Funduino joystick shield and set its 3.3 V/5 V lever to <strong>3.3 V</strong>. The user confirmed the board layout: A=Up, C=Down, B=Right, D=Left, F=Wii A and E=Wii B. These assignments are for this shield prototype, not a finalized custom PCB.</p>
+  <p>The six-button prototype (merged from <code>nxt16-physical-buttons</code>) uses digital inputs only; joystick axes and click are unused. Physical input is off by default. Host debounce/source-merging tests and the enabled firmware build pass. The user wired F/E for Wii A/B, confirmed PHY A press/release and reported the physical input working in Mario Kart Wii in Dolphin. This confirms the physical-to-shared-Wii-button path, not all six controls. The user plans fuller button/game testing in a later task; the other buttons, combinations and vWii input remain unverified.</p>
+  <p><strong>Power off before wiring. Use the shield's 3.3 V selector and supply, common ground, and verify 0-3.3 V button signals. Never connect 5 V signals to ESP32 GPIO.</strong> Use jumper wires, not direct Arduino-shield stacking. Leave analog axes, KEY and the 5 V rail unconnected.</p>
+  <table>
+    <thead><tr><th>Shield signal</th><th>Wii/web control</th><th>ESP32 GPIO</th></tr></thead>
+    <tbody>
+      <tr><td>A / D2 (top)</td><td>Up</td><td>32</td></tr>
+      <tr><td>B / D3 (right)</td><td>Right</td><td>33</td></tr>
+      <tr><td>C / D4 (bottom)</td><td>Down</td><td>25</td></tr>
+      <tr><td>D / D5 (left)</td><td>Left</td><td>14</td></tr>
+      <tr><td>F / D7</td><td>A</td><td>23</td></tr>
+      <tr><td>E / D6</td><td>B</td><td>19</td></tr>
+    </tbody>
+  </table>
+  <p>Check direction labels on your actual shield; adjust wiring if its layout differs. Shield D2 is not ESP32 GPIO2. These pins have internal pull-ups; buttons switch to ground. Sensor and serial pins are unchanged. Enable <code>NEXTMOTE_ENABLE_PHYSICAL_BUTTONS=1</code> and follow the <a href="./wiimote-hid-test/README.md#physical-buttons-one-funduino-joystick-shield">full build and test checklist</a>. The sensor-only map below lists these pins as unused; with this prototype enabled they are reserved for the assignments above.</p>
+</section>
 
 <section id="complete-board-pin-map">
   <h2>Complete board pin diagram - our 30-pin ESP32-WROOM board</h2>

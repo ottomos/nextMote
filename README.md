@@ -87,6 +87,8 @@ The slot probe and watcher are read-only with respect to pairing. Do not run the
 
 ## Current scope and limitations
 
+- **Physical-button prototype (merged from `nxt16-physical-buttons`; opt-in):** one Funduino joystick shield supplies four direction buttons and two small A/B buttons, matching the web controller. Analog axes/click are unused. GPIO32/33/25/14/23/19 use active-low inputs with debounce; physical/web holds are combined rather than overwriting each other. Enable `NEXTMOTE_ENABLE_PHYSICAL_BUTTONS=1` only after verifying 3.3 V wiring. Host tests and enabled firmware build pass. The user confirmed PHY A press/release with F/E wired for Wii A/B and reported the physical input working in Mario Kart Wii in Dolphin. That confirms the shared physical-to-Wii-button path, not all six controls: the remaining buttons and fuller game tests are deferred to a later task. See the [wiring and test instructions](./wiimote-hid-test/README.md#physical-buttons-one-funduino-joystick-shield).
+
 ### Device initialization and Wi-Fi
 
 On first boot with no saved Wi-Fi network, join `nextMote-Setup-XXXX` and open `http://192.168.4.1/` (stay connected despite the no-internet warning). Choose a **2.4 GHz** network and enter its password. Shared dual-band SSIDs work through their 2.4 GHz radio. Successful setup saves the network in NVS, shows the assigned IP and restarts after 10 seconds. Rejoin your home Wi-Fi and open that IP to use the controller.

@@ -23,6 +23,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "nextmote_console.h"
+#include "wiimote_physical_buttons.h"
 #include "nextmote_setup.h"
 #include "nextmote_wifi_config.h"
 #include "wiimote_commands.h"
@@ -2249,5 +2250,6 @@ void app_main(void)
 #else
     ESP_LOGW(TAG, "IMU motion disabled (NEXTMOTE_ENABLE_IMU_MOTION=0): no BNO08x I2C, no sensor HID task");
 #endif
+    ESP_ERROR_CHECK(wiimote_physical_buttons_start());
     ESP_ERROR_CHECK(wiimote_controls_start_fake_demo());
 }

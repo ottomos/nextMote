@@ -23,6 +23,7 @@
 #include "esp_timer.h"
 #include "wiimote_accel.h"
 #include "wiimote_state.h"
+#include "wiimote_physical_buttons.h"
 #include "wiimote_motion_plus.h"
 #include "wiimote_nunchuk.h"
 #include "wiimote_reports.h"
@@ -149,6 +150,7 @@ static const char INDEX_HTML[] =
     "border:0;border-radius:10px;padding:10px 18px;font:inherit}.wifi-setup small{display:block;margin-top:8px;color:#aab6d3}"
     "</style></head><body><main class='wrap'><h1>nextMote</h1>"
     "<div id='status'>Loading controller status…</div><div id='button-status' aria-live='polite'></div>"
+    "<div id='physical-button-status' aria-live='polite' style='text-align:center;margin-bottom:12px'>PHY: loading</div>"
     "<section class='pairing-panel' aria-label='Bluetooth host actions'>"
     "<div class='pair-actions'>"
     "<button id='reconnect-button' type='button' class='pair-action reconnect-button'>"
@@ -272,7 +274,19 @@ static const char INDEX_HTML[] =
     "syncButton.disabled=pairingPending||manualReconnectActive||syncRequestPending;"
     "if(!manualReconnectActive)reconnectButtonLabel.textContent='Reconnect'}}"
     "reconnectButton.addEventListener('click',requestReconnect);"
-    "function updateStatus(s){const host=s.last_host?' '+s.last_host:'';"
+    "let phyPrevious=null;"
+    "function updatePhysical(s){const el=document.querySelector('#physical-button-status');if(!el)return;"
+    "if(!s.phy_enabled){el.textContent='PHY: disabled';phyPrevious=null;return}"
+    "const names=['Up','Right','Down','Left','A','B'],masks=[2048,512,1024,256,8,4];"
+    "const counts=s.phy_counts;if(!Array.isArray(counts)||counts.length!==12)return;"
+    "const events=[];if(phyPrevious)for(let i=0;i<6;i++){"
+    "if(counts[i*2]!==phyPrevious[i*2])events.push('PHY Pressed '+names[i]);"
+    "if(counts[i*2+1]!==phyPrevious[i*2+1])events.push('PHY Released '+names[i])}"
+    "const heldNames=names.filter((_,i)=>s.phy_mask&masks[i]);"
+    "if(events.length)el.textContent=events.join(' · ')+(heldNames.length?' | Held: '+heldNames.join(', '):'');"
+    "else if(!phyPrevious)el.textContent=heldNames.length?'PHY Held: '+heldNames.join(', '):'PHY: no buttons pressed';"
+    "phyPrevious=counts.slice()}"
+    "function updateStatus(s){updatePhysical(s);const host=s.last_host?' '+s.last_host:'';"
     "const link=s.connected?'Bluetooth HID link active'+(s.last_host?' · '+s.last_host:''):"
     "s.sync_window?'Pairing window open':"
     "s.reconnecting?'Trying saved host'+host:"
@@ -441,16 +455,32 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
     char ssid_json[6 * NEXTMOTE_WIFI_SSID_MAX + 1];
     nextmote_json_escape(s_wifi_ssid, ssid_json, sizeof(ssid_json));
-    char response[576];
+    wiimote_physical_buttons_snapshot_t phy;
+    wiimote_physical_buttons_get_snapshot(&phy);
+    char phy_json[192];
+    int phy_length = snprintf(phy_json, sizeof(phy_json),
+        "%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu",
+        (unsigned long)phy.presses[0], (unsigned long)phy.releases[0],
+        (unsigned long)phy.presses[1], (unsigned long)phy.releases[1],
+        (unsigned long)phy.presses[2], (unsigned long)phy.releases[2],
+        (unsigned long)phy.presses[3], (unsigned long)phy.releases[3],
+        (unsigned long)phy.presses[4], (unsigned long)phy.releases[4],
+        (unsigned long)phy.presses[5], (unsigned long)phy.releases[5]);
+    if (phy_length < 0 || (size_t)phy_length >= sizeof(phy_json)) {
+        ESP_LOGE(TAG, "Physical button status formatting failed");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Button status formatting failed");
+    }
+    char response[832];
     bool hid_connected = hid_connected_snapshot();
     bool sync_window_active = sync_window_snapshot();
     int length = snprintf(response, sizeof(response),
-             "{\"wifi\":%s,\"ssid\":\"%s\",\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s,\"manual_reconnect\":%s,\"pairing_phase\":\"%s\"}",
+             "{\"wifi\":%s,\"ssid\":\"%s\",\"connected\":%s,\"sync_window\":%s,\"ip\":\"%s\",\"pairing_profile\":\"%s\",\"last_host\":\"%s\",\"reconnecting\":%s,\"manual_reconnect\":%s,\"pairing_phase\":\"%s\",\"phy_enabled\":%s,\"phy_mask\":%u,\"phy_counts\":[%s]}",
              (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) ? "true" : "false",
              ssid_json, hid_connected ? "true" : "false",
              sync_window_active ? "true" : "false", ip, PAIRING_PROFILE, last_host,
              reconnect_pending ? "true" : "false",
-             manual_reconnect_pending ? "true" : "false", pairing_phase);
+             manual_reconnect_pending ? "true" : "false", pairing_phase,
+             phy.enabled ? "true" : "false", phy.mask, phy_json);
     if (length < 0 || (size_t)length >= sizeof(response)) {
         ESP_LOGE(TAG, "Status response formatting failed");
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
