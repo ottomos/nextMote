@@ -117,7 +117,7 @@ Games requiring unimplemented extensions or unvalidated MotionPlus behavior may 
 
 ## Physical buttons: one Funduino joystick shield
 
-Branch `nxt16-physical-buttons` adds **six digital buttons**, matching the web controller's Up, Right, Down, Left, A and B inputs. The joystick axes and joystick click are unused; 1/2/Plus/Minus/Home remain available on the web page. Physical input is **off by default**. On 9 November 2026, the user wired shield F/E for Wii A/B, confirmed PHY A press/release feedback and reported the physical buttons working in Mario Kart Wii in Dolphin. Direction inputs, individual B/combination coverage and physical-button vWii operation remain unverified.
+The feature merged from `nxt16-physical-buttons` adds **six digital buttons**, matching the web controller's Up, Right, Down, Left, A and B inputs. The joystick axes and joystick click are unused; 1/2/Plus/Minus/Home remain available on the web page. Physical input is **off by default**. On 9 November 2026, the user wired shield F/E for Wii A/B, confirmed PHY A press/release feedback and reported the physical input working in Mario Kart Wii in Dolphin. This confirms that the physical input reaches the shared Wii Remote button interface. The remaining buttons, simultaneous combinations and a fuller test are deferred by the user to a later task; no full six-button or vWii validation is claimed.
 
 The [Robotistan shield reference](https://www.robotistan.com/joystick-shield-for-arduino) lists six buttons A-F on D2-D7 and a 3.3 V/5 V selector. Match these labels against your actual board; do not use the inconsistent dual-joystick listing as a wiring reference.
 
@@ -154,7 +154,7 @@ First bench test: check the startup line `Shield buttons enabled: Up=32 Right=33
 
 The web app has a separate physical-input line: **PHY Pressed A**, **PHY Released A**, etc., independent of Bluetooth connection. It polls status about once per second; transition counters let it show both press and release if a tap happens between polls. This is a diagnostic summary, not a timestamped event log: repeated transitions may be grouped and ordering across buttons is not preserved. The last summary stays visible. Web-click feedback remains separate and physical presses do not highlight the virtual buttons.
 
-Physical and web controls feed the **same Wii Remote button state and HID report interface**; there is no separate game-facing physical-button protocol. The Mario Kart Wii result confirms the physical-input path in the tested Dolphin setup. Platform labels in the test records describe where testing occurred, not different button implementations.
+Physical and web controls feed the **same Wii Remote button state and HID report interface**; there is no separate game-facing physical-button protocol. The Mario Kart Wii result confirms the physical-input path in the user's tested Dolphin setup. Platform labels in the test records describe where testing occurred, not different button implementations.
 
 Validation: host tests cover debounce and release bounce, timer wraparound, all 64 combinations, mixed-source holds/releases and reconnect state. ESP-IDF 6.0.1 builds with physical buttons enabled. The first hardware flash lost communication twice; with the shield disconnected, a complete 115200-baud flash succeeded and verified its hash. After reconnection, the user confirmed PHY A press/release and a Mario Kart Wii result in Dolphin. This is a limited user-reported result, not full six-button or real-console certification.
 
