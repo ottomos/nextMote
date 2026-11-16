@@ -1,8 +1,8 @@
 # nextMote
 
-In this documentation, **wiimote** means the genuine Nintendo device and
+(In this documentation, **wiimote** means the genuine Nintendo device and
 **nextMote** means this project's implementation. Chip model names and quoted
-API/log identifiers retain their original spelling.
+API/log identifiers retain their original spelling.)
 
 nextMote is an ESP32 Bluetooth Classic HID-device prototype that presents a wiimote-like HID identity to a Mayflash DolphinBar. This is experimental firmware, **not a complete wiimote replacement**. Bluetooth pairing, HID channels, status/LED exchange, a Wi-Fi web controller and button reports have been exercised through the DolphinBar. I found that Mario Kart Wii accepts web-generated A input after a game restart, and that the current trace-driven build allows entry into both Mario Kart Wii and Wii Sports in the tested Dolphin + DolphinBar mode 4 setup. These are narrow, my observed results, not general compatibility certification or proof of full gameplay support.
 
