@@ -99,6 +99,8 @@ On Linux, `./tools/nextmote-ip.sh` automatically finds a single connected serial
 
 To find nextMote over the active local IPv4 network without resetting it, run `./tools/nextmote-ip.sh --search`. Optionally name the network interface, e.g. `./tools/nextmote-ip.sh --search wlo1`. It checks only the bounded local subnet for nextMote's HTTP status API and uses Python 3's standard library plus Linux `ip` (iproute2); it does not scan beyond that interface's subnet.
 
+On Windows, run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\nextmote-ip.ps1` from PowerShell in the repository root. Add `-InterfaceAlias 'Wi-Fi'` after the script path to select an interface. This version also limits the search to a local IPv4 subnet of at most 256 addresses and does not reset nextMote.
+
 Verified on 13 November 2026: the no-reset search found the connected board on the local `192.168.68.0/24` network and printed its web URL.
 
 Use the web **Wi-Fi setup** button or serial `setup` to reconfigure without deleting the old network. Serial `forget` resets only Wi-Fi settings, not Bluetooth pairing; `normal` or another reset exits a one-shot setup session when a network is saved. An unreachable saved network does not automatically start setup mode; use serial recovery instead.
