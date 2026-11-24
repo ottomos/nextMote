@@ -44,7 +44,7 @@ The camera and BNO share one ESP-IDF I2C master on GPIO21/22. The bus lock keeps
 
 Camera and IMU together were user-confirmed in Mario Kart Wii (Dolphin + DolphinBar, M+ build): steady finger cursor with live motion. Two firmware fixes were needed: the IMU service delay rounded to 0 ticks at 100 Hz (the task busy-spun on the bus lock), and the I2C interrupt now lives on core 1, away from Bluetooth/Wi-Fi, which had stretched long BNO packet reads under game traffic until camera lock waits hit the 100 ms timeout. `GET /api/bus` reports per-user lock wait/hold timing and IMU packet times (`?reset=1` returns then clears).
 
-`GET /api/imu` returns detection/orientation, acceleration freshness/count/raw HID values, `recoveries`, `gyro_samples`, `motion_plus_active`, `hid_data_sent`, and `hid_send_failures`. The web page displays the three angles and a rotating orientation cube. With the camera disconnected, the camera panel may report not detected while the IMU panel can still report readings. Unlike the original orientation-only `imu-addon`, `nxt12-imu-integration` sends gravity-inclusive BNO acceleration in Wii Remote HID reports, with basic motion user-confirmed in Mario Kart Wii through Dolphin + DolphinBar. See [motion integration](./wiimote-hid-test/README.md#standard-wii-remote-motion-integration) for encoding, cadence, fallback, and remaining acceptance checks.
+`GET /api/imu` returns detection/orientation, acceleration freshness/count/raw HID values, `recoveries`, `gyro_samples`, `motion_plus_active`, `hid_data_sent`, and `hid_send_failures`. The web page displays the three angles and a rotating orientation cube. With the camera disconnected, the camera panel may report not detected while the IMU panel can still report readings. Unlike the original orientation-only `imu-addon`, `nxt12-imu-integration` sends gravity-inclusive BNO acceleration in Wii Remote HID reports, with basic motion user-confirmed in Mario Kart Wii through Dolphin + DolphinBar. See [motion integration](./nextmote-wii/README.md#standard-wii-remote-motion-integration) for encoding, cadence, fallback, and remaining acceptance checks.
 
 ### IMU-only wiring for the test
 
@@ -91,7 +91,7 @@ If powering the camera from 5 V instead, use the level shifter: ESP32 3V3 to LV,
 
 ## Build and view
 
-From `firmware/wiimote-hid-test`, build for the original ESP32 target:
+From `firmware/nextmote-wii`, build for the original ESP32 target:
 
 ```bash
 idf.py set-target esp32

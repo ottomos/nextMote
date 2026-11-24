@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(
-    path.join(__dirname, '../wiimote-hid-test/main/wiimote_web.c'), 'utf8');
+    path.join(__dirname, '../nextmote-wii/main/wiimote_web.c'), 'utf8');
 const block = source.split('static const char INDEX_HTML[] =')[1]
     .split('\n\nstatic uint16_t')[0];
 const html = [...block.matchAll(/"(?:[^"\\]|\\.)*"/g)]

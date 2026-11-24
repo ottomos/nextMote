@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sys
 
-source = Path(__file__).parents[1] / "wiimote-hid-test/main/wiimote_web.c"
+source = Path(__file__).parents[1] / "nextmote-wii/main/wiimote_web.c"
 text = source.read_text(encoding="utf-8")
 
 expected = {

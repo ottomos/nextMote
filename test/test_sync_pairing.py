@@ -4,7 +4,7 @@
 from pathlib import Path
 import re
 
-root = Path(__file__).parents[1] / "wiimote-hid-test/main"
+root = Path(__file__).parents[1] / "nextmote-wii/main"
 header = (root / "wiimote_web.h").read_text(encoding="utf-8")
 web = (root / "wiimote_web.c").read_text(encoding="utf-8")
 app = (root / "wiimote_app.c").read_text(encoding="utf-8")

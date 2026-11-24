@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname,
-    '../wiimote-hid-test/main/wiimote_web.c'), 'utf8');
+    '../nextmote-wii/main/wiimote_web.c'), 'utf8');
 const start = source.indexOf('    "let phyPrevious=null;"');
 const end = source.indexOf('    "function updateStatus(s)', start);
 const script = source.slice(start, end).trim().split('\n')

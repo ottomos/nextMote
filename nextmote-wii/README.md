@@ -2,7 +2,7 @@
 
 This ESP-IDF project configures the original ESP32 as a Bluetooth Classic HID peripheral using Bluedroid. It advertises the `Nintendo RVL-CNT-01` name, publishes Nintendo's Device ID SDP record (`057e:0306`), and implements a web-triggered, 30-second bonded SYNC window using timed Limited discovery. The current one-IAC controller profile rotates GIAC/LIAC every 0.64 seconds, with a `0x0012` inquiry-scan window at `0x0400` interval and R1 page scanning. The standard five-cycle PC test passed 5/5 for both codes with CoD `0x002504`; short 2.56-second scans were less consistent. The firmware remains a partial, experimental wiimote emulation.
 
-The product and web-app name is **nextMote**. The Bluetooth HID name intentionally remains `Nintendo RVL-CNT-01` for Wii Remote compatibility. The ESP-IDF CMake project is named `nextMote`; the established workspace path remains `firmware/wiimote-hid-test`.
+The product and web-app name is **nextMote**. The Bluetooth HID name intentionally remains `Nintendo RVL-CNT-01` for Wii Remote compatibility. The ESP-IDF CMake project is named `nextMote`; the established workspace path remains `firmware/nextmote-wii`.
 
 > **Current implementation status and next steps:** the latest Pair/Reconnect results and user-reported Wii U/vWii observations are in [Latest Pair and Reconnect validation](#latest-pair-and-reconnect-validation). The broader workspace experiment log is maintained outside this firmware repository.
 
@@ -217,7 +217,7 @@ The project defaults in `sdkconfig.defaults` enable Bluetooth Classic HID-device
 
 ### Quick iteration
 
-- Work from `firmware/wiimote-hid-test` in the nextMote repository, not the separate legacy `espWiimote` Arduino project.
+- Work from `firmware/nextmote-wii` in the nextMote repository, not the separate legacy `espWiimote` Arduino project.
 - For normal source edits, use incremental `idf.py build`; reserve `idf.py fullclean` for stale build/configuration problems.
 - On the tested ESP32, flash at 115200 baud: `idf.py -p /dev/ttyUSB0 -b 115200 flash`. If esptool reports that the stub failed to start, no image was written; resync with `python -m esptool --chip esp32 -p /dev/ttyUSB0 -b 57600 --no-stub read-mac`, then retry the flash.
 - A flash resets the HID connection; press DolphinBar SYNC again. Verify `/api/status` and `/api/camera` at the IP printed by the firmware. The current camera initialization uses the DFRobot default sensitivity profile.
